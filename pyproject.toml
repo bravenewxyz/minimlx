@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimlx"
+version = "0.1.0"
+description = "Very fast macOS CLI for Google Gemma 4 on Apple Silicon via MLX."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "liszper"}]
+dependencies = [
+    "mlx-lm>=0.31.2",
+    "typer>=0.15",
+    "rich>=13.7",
+    "prompt_toolkit>=3.0.50",
+    "huggingface_hub>=0.26",
+]
+
+[project.optional-dependencies]
+conversation = [
+    "sounddevice>=0.5",
+    "transformers>=4.52",
+    "torch>=2.5",
+    "sentencepiece",
+    "protobuf",
+    "librosa",
+    "soundfile",
+]
+dflash = [
+    "dflash[mlx] @ git+https://github.com/z-lab/dflash",
+]
+# Google's Multi-Token-Prediction drafters (Gemma-4 only). Requires
+# mlx-vlm 0.5.0+ — currently only available from `Blaizzy/mlx-vlm` main;
+# remove the git-URL form once 0.5.0 lands on PyPI.
+mtp = [
+    "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm",
+]
+
+[project.urls]
+Homepage = "https://github.com/bravenewxyz/minimlx"
+
+[project.scripts]
+minimlx = "minimlx.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["minimlx*"]
