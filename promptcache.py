@@ -5,16 +5,16 @@ that repeated prompt prefixes skip the prefill step.
 
 Covers three related optimisations from the server's perspective:
 
-- **System-prompt cache** (item 6): when the user asks N questions with the
+- **System-prompt cache**: when the user asks N questions with the
   same system prompt, the tokens for that system prompt are KV-computed once
   and reused for every follow-up. First-token latency drops from hundreds of
   ms to sub-millisecond.
 
-- **Conversation KV cache** (item 12): across turns of the same conversation,
+- **Conversation KV cache**: across turns of the same conversation,
   the full prefix (system + prior user/assistant turns) is cached. Each new
   user turn only prefills the new tokens.
 
-- **Prefix trie** (item 13): keys are token-id sequences. Lookup walks every
+- **Prefix trie**: keys are token-id sequences. Lookup walks every
   entry and picks the longest common prefix, so multiple overlapping
   conversations share KV for anything they have in common.
 

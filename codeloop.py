@@ -132,16 +132,15 @@ def _drain_and_render(
     """Drain the chunk stream while rendering text (reasoning stripped) to the
     terminal. Returns the raw unfiltered buffer for downstream parsing.
 
-    Three streams land in different places:
+    Two streams land in different places:
       - **Thinking content** → `console.print` (dim italic) → scrollback.
-      - **Tool-call bodies** → `console.print` (dim cyan) → scrollback. Live
-        widget shows a compact `[calling write_file…]` marker in their place.
-      - **Answer text** → `Live` widget with markdown rendering.
+      - **Answer text** → `Live` widget with markdown rendering. Tool-call
+        blocks are collapsed to a compact `[calling write_file…]` marker.
 
-    Routing the long-form bodies (thinking, tool calls) to scrollback rather
-    than holding them in `Live` keeps the live frame bounded — once a frame
-    grows past terminal height, Rich can no longer redraw the off-screen
-    portion and the UI looks stuck.
+    Routing the long-form thinking to scrollback rather than holding it in
+    `Live` keeps the live frame bounded — once a frame grows past terminal
+    height, Rich can no longer redraw the off-screen portion and the UI
+    looks stuck.
     """
     raw = ""
     n_tok = 0
@@ -153,8 +152,6 @@ def _drain_and_render(
     thinking_header_printed = False
     thinking_finalized = False  # True after we've printed the post-thinking newline
     printed_thinking = 0
-    # Per tool-call: keys are the body-start byte offsets in `raw`.
-    streamed_tool_bodies: dict[int, dict[str, Any]] = {}
     live: Live | None = None
 
     def _flush_thinking() -> None:
@@ -182,45 +179,10 @@ def _drain_and_render(
             console.print()
         thinking_finalized = True
 
-    def _stream_tool_bodies(answer: str) -> None:
-        """Stream new tool-call body bytes to scrollback. Idempotent —
-        tracks per-body progress so each chunk only prints what's new."""
-        pairs = ((GEMMA4_OPEN, GEMMA4_CLOSE), (GENERIC_OPEN, GENERIC_CLOSE))
-        for open_m, close_m in pairs:
-            cursor = 0
-            while True:
-                i = answer.find(open_m, cursor)
-                if i == -1:
-                    break
-                body_start = i + len(open_m)
-                j = answer.find(close_m, body_start)
-                body_end = j if j != -1 else len(answer)
-
-                state = streamed_tool_bodies.get(body_start)
-                if state is None:
-                    # First time seeing this open marker — extract the
-                    # tool name (if visible yet) and print a header.
-                    preview = _preview_tool_body(answer[body_start:body_end])
-                    name = preview.split("{", 1)[0] if preview else "tool"
-                    console.print()
-                    console.print(f"[dim cyan]→ {name} body:[/]")
-                    state = {"printed": 0, "closed": False}
-                    streamed_tool_bodies[body_start] = state
-
-                new_text = answer[body_start + state["printed"]:body_end]
-                if new_text:
-                    console.print(new_text, end="", style="dim cyan", highlight=False)
-                    state["printed"] = body_end - body_start
-                if j != -1 and not state["closed"]:
-                    console.print()  # newline closes the body block
-                    state["closed"] = True
-
-                cursor = (j + len(close_m)) if j != -1 else len(answer)
-
     def _compact_mask(answer: str) -> str:
         """Replace each tool-call block with a tiny `[calling NAME…]` marker
-        so the Live widget body stays bounded. The full body is already in
-        scrollback via `_stream_tool_bodies`."""
+        so the Live widget body stays bounded. The raw tool-call body is not
+        shown; the executed result is rendered after the turn."""
         pairs = ((GEMMA4_OPEN, GEMMA4_CLOSE), (GENERIC_OPEN, GENERIC_CLOSE))
         out = answer
         for open_m, close_m in pairs:
@@ -286,11 +248,8 @@ def _drain_and_render(
             # phase 1 ever fires, and the normal case where phase 1 had been
             # streaming gradually. Returns immediately on subsequent calls.
             _finalize_thinking()
-            # Tool-call bodies stream straight to scrollback in dim cyan;
-            # the Live widget below only sees the compact `[calling X…]`
-            # placeholder via `_compact_mask`. Rich routes `console.print`
-            # calls inside an active Live context above the live area.
-            _stream_tool_bodies(answer)
+            # The Live widget renders the answer with each tool-call block
+            # collapsed to a compact `[calling X…]` marker via `_compact_mask`.
             if live is None:
                 live = Live(
                     Group(Text(""), Text("", style="dim")),
@@ -388,6 +347,7 @@ def run_code_session(
     max_tokens: int = _D.CODE_MAX_TOKENS,
 ) -> list[dict]:
     """Single-request agentic loop. Returns the full message history."""
+    console.print(f"loading {engine.model_id}…", style="dim")
     engine.load()
     supports = template_supports_tools(engine.tokenizer)
 

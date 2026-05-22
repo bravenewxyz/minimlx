@@ -90,7 +90,7 @@ _DEFAULT_MODEL = _D.MODEL
 _VERBOSE = False
 _PINNED = False  # If True, every request uses _DEFAULT_MODEL regardless of
                  # what the client's `model` field asks for. Prevents model
-                 # swapping, which crashes under the PrismML mlx fork when
+                 # swapping, which can crash on some mlx builds when
                  # freeing a 31B target triggers late Metal callbacks.
 
 
@@ -264,7 +264,7 @@ def _resolve(model_name: str | None) -> tuple[str, str]:
 
     Follows alias chains: if the resolved value is itself an alias key,
     resolve again (max 5 hops to avoid loops). This lets users write
-    `my-fav = "qwen36-35b-claude-opus-abliterated"` in aliases.toml
+    `my-fav = "qwen36-35b"` in aliases.toml
     and have it resolve through to the local path.
     """
     aliases = load_aliases()

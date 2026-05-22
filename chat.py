@@ -18,7 +18,7 @@ from minimlx.prompts import system_prompt
 from minimlx.render import _split_channels, stream_response
 from minimlx.speak import Speaker
 from minimlx.store import Store
-from minimlx.toolrender import render_call, render_result
+from minimlx.toolrender import render_result, render_result_line
 from minimlx.tooluse import (
     anthropic_tools_to_transformers,
     build_tool_system_prompt,
@@ -54,6 +54,7 @@ def _print_help(console: Console) -> None:
         "[dim]/model         · show current model[/]\n"
         "[dim]/models [A]    · list aliases, or switch to alias A[/]\n"
         "[dim]/stats         · show last-turn stats[/]\n"
+        "[dim]/results       · show/hide full tool output (default: hidden)[/]\n"
         "[dim]/speak         · toggle TTS on/off[/]\n"
         "[dim]/voice NAME    · set TTS voice (e.g. Samantha)[/]\n"
         "[dim]/rate WPM      · set TTS words per minute[/]\n"
@@ -192,6 +193,7 @@ def _run_tool_loop(
     max_tokens: int,
     temp: float,
     top_p: float,
+    show_tool_results: bool = False,
 ) -> str:
     """Run the tool-use loop for a single user turn.
 
@@ -240,9 +242,14 @@ def _run_tool_loop(
         for call in tool_calls:
             name = call.get("name", "")
             inp = call.get("input") or {}
-            render_call(console, name, inp)
-            result = tools_impl.run(name, inp)
-            render_result(console, name, inp, result)
+            with console.status(f"[dim]running {name}…[/]", spinner="dots"):
+                result = tools_impl.run(name, inp)
+            # Errors always render in full; successful results collapse to a
+            # one-line summary unless the user enabled /results.
+            if show_tool_results or result.is_error:
+                render_result(console, name, inp, result)
+            else:
+                render_result_line(console, name, inp, result)
             tool_results_blocks.append({
                 "type": "tool_result",
                 "tool_use_id": call.get("id", ""),
@@ -284,7 +291,9 @@ def run_chat(
     tools_impl: CodeTools | None = None
     tool_schemas: list[dict] = []
     tools_hint = ""
+    show_tool_results = False  # /results toggles full tool-output panels
     if tools_on:
+        console.print(f"loading {engine.model_id}…", style="dim")
         engine.load()
         effective_cwd = (cwd or Path.cwd()).resolve()
         tools_impl = CodeTools(cwd=effective_cwd, allow_bash=allow_bash, unrestricted=unrestricted)
@@ -335,8 +344,9 @@ def run_chat(
     def _toolbar() -> HTML:
         tts = "  spk:on" if speaker.enabled else ""
         tl = "  tools:on" if tools_on else ""
+        res = "  results:shown" if (tools_on and show_tool_results) else ""
         return HTML(
-            f" <b>{engine.model_id.split('/')[-1]}</b> · turns: {_turns()}{tts}{tl} · /help "
+            f" <b>{engine.model_id.split('/')[-1]}</b> · turns: {_turns()}{tts}{tl}{res} · /help "
         )
 
     session: PromptSession = PromptSession(
@@ -449,6 +459,11 @@ def run_chat(
                 else:
                     console.print("[dim]no stats yet[/]")
                 continue
+            if cmd == "/results":
+                show_tool_results = not show_tool_results
+                state = "shown in full" if show_tool_results else "hidden (one-line summaries)"
+                console.print(f"[dim]-- tool results {state} --[/]")
+                continue
             if cmd == "/speak":
                 speaker.set_enabled(not speaker.enabled)
                 console.print(f"[dim]TTS {'on' if speaker.enabled else 'off'}[/]")
@@ -493,6 +508,7 @@ def run_chat(
                 final_text = _run_tool_loop(
                     engine, console, messages, tools_impl, tool_schemas,
                     max_tokens=max_tokens, temp=temp, top_p=top_p,
+                    show_tool_results=show_tool_results,
                 )
             except KeyboardInterrupt:
                 console.print("[dim]-- interrupted --[/]")

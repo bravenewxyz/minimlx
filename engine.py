@@ -88,9 +88,7 @@ class Engine:
     def load(self) -> None:
         if self._loaded:
             return
-        if self._try_jang_load():
-            self._loaded = True
-            return
+        self._configure_download_progress()
 
         if self._is_mtp:
             # MTP needs mlx-vlm's wrapper because the drafter consumes the
@@ -148,46 +146,37 @@ class Engine:
                 self.draft_model, _ = mlx_load(self.draft_model_id)
         self._loaded = True
 
-    def _try_jang_load(self) -> bool:
-        """Detect and load JANG-quantized models (JANGTQ / MXQ / JANG v2).
-
-        Returns True if the model was loaded via jang-tools, False otherwise.
-        """
-        from pathlib import Path
-        import json
-
-        # Resolve HF repo to a local snapshot path
+    def _configure_download_progress(self) -> None:
+        """Show Hugging Face download bars only when something actually needs
+        downloading. When every model file is already cached the bars just
+        flash degenerate `0.00B` lines and mangle later output, so suppress
+        them in that case."""
         try:
-            from huggingface_hub import snapshot_download
-            path = Path(snapshot_download(
-                self.model_id,
-                allow_patterns=[
-                    "*.json", "*.safetensors", "*.model", "*.txt",
-                    "tokenizer*", "*.py", "*.md", "*.jinja",
-                ],
-            ))
-        except Exception:
-            return False
-
-        # Check for jang_config.json
-        jang_cfg_path = path / "jang_config.json"
-        if not jang_cfg_path.exists():
-            return False
-
-        jang_cfg = json.loads(jang_cfg_path.read_text())
-
-        # Use jang-tools v2 loader (handles JANG, MXQ, and MXTQ formats)
-        try:
-            from jang_tools.loader import _load_jang_v2
-        except ImportError:
-            raise ImportError(
-                "This model requires jang-tools. Install from: "
-                "pip install /path/to/jang-tools  (see github.com/jangq-ai/jangq)"
+            from huggingface_hub import try_to_load_from_cache
+            from huggingface_hub.utils import (
+                disable_progress_bars,
+                enable_progress_bars,
             )
+        except Exception:
+            return
 
-        self.model, self.tokenizer = _load_jang_v2(path, jang_cfg)
-        self.draft_model = None
-        return True
+        def _ready(repo: str) -> bool:
+            # Local paths and bare names have nothing to fetch from the Hub.
+            if "/" not in repo or repo.startswith(("/", "~", ".")):
+                return True
+            try:
+                return isinstance(try_to_load_from_cache(repo, "config.json"), str)
+            except Exception:
+                return True
+
+        repos = [r for r in (self.model_id, self.draft_model_id) if r]
+        try:
+            if all(_ready(r) for r in repos):
+                disable_progress_bars()
+            else:
+                enable_progress_bars()
+        except Exception:
+            pass
 
     def _build_prompt(self, messages: list[dict], tools: list[dict] | None = None) -> str:
         kwargs = {"tokenize": False, "add_generation_prompt": True}

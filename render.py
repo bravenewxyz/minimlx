@@ -13,9 +13,13 @@ from minimlx.engine import Chunk
 # (open_marker, close_marker) pairs for each model's thinking channel.
 _THINK_PAIRS: tuple[tuple[str, str], ...] = (
     ("<|channel>thought", "<channel|>"),  # Gemma 4
-    ("<think>",           "</think>"),     # Qwen / Qwopus / DeepSeek-R1 / etc.
+    ("<think>",           "</think>"),     # Qwen / DeepSeek-R1 / etc.
 )
-_END_MARKERS: tuple[str, ...] = ("<turn|>", "<|im_end|>", "<|eot_id|>")
+# Turn-enders, plus the tool-response marker some chat templates emit right
+# after a tool call — from there on it is template scaffolding, not answer.
+_END_MARKERS: tuple[str, ...] = (
+    "<turn|>", "<|im_end|>", "<|eot_id|>", "<|tool_response>", "<tool_response>",
+)
 
 
 def _split_channels(buf: str) -> tuple[str, str, bool]:

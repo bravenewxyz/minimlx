@@ -65,19 +65,70 @@ def _short_hint(name: str, inp: dict) -> str:
     return ""
 
 
-def render_call(console: Console, name: str, inp: dict) -> None:
-    """Render the 'about to run' banner for a tool call."""
+# Per-tool display: (emoji, short label) for the compact one-line renderer.
+_TOOL_DISPLAY: dict[str, tuple[str, str]] = {
+    "read_file":  ("📖", "read"),
+    "write_file": ("✏", "write"),
+    "edit_file":  ("✦", "edit"),
+    "bash":       ("$", "bash"),
+    "grep":       ("🔎", "grep"),
+    "glob":       ("⋯", "glob"),
+    "ls":         ("📂", "ls"),
+}
+
+# Accent for collapsed tool-call lines — strong but easy on the eyes.
+_TOOL_COLOR = "cornflower_blue"
+
+
+def _result_summary(name: str, inp: dict, result: ToolResult) -> str:
+    """A short outcome summary for the compact one-line renderer."""
+    out = result.output or ""
+    if result.is_error:
+        body = out.strip()
+        return (body.splitlines()[0] if body else "failed")[:80]
+    if name == "ls":
+        n = sum(1 for line in out.splitlines() if line.strip())
+        return f"{n} entries" if n else "empty"
+    if name in ("grep", "glob"):
+        body = out.strip()
+        if body in ("", "[no matches]"):
+            return "no matches"
+        return f"{len(body.splitlines())} {'matches' if name == 'grep' else 'files'}"
+    if name == "read_file":
+        return f"{len(out.splitlines())} lines"
+    if name == "write_file":
+        content = inp.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        return f"{len(content.splitlines())} lines written"
+    if name == "edit_file":
+        return "ok"
+    if name == "bash":
+        first = out.splitlines()[0] if out.splitlines() else ""
+        return first if first.startswith("exit ") else "ok"
+    n = len(out.splitlines())
+    return f"{n} lines" if n else "ok"
+
+
+def render_result_line(console: Console, name: str, inp: dict, result: ToolResult) -> None:
+    """Compact one-line render of a tool result — the default when tool
+    results are hidden. The full panel is available via the chat `/results`
+    toggle."""
     try:
+        emoji, label = _TOOL_DISPLAY.get(name, ("⚒", name))
         hint = _short_hint(name, inp or {})
-        t = Text("· ", style="dim")
-        t.append(f"running {name}", style="dim")
+        accent = "red" if result.is_error else _TOOL_COLOR
+        t = Text()
+        t.append(f"{emoji} ")
+        t.append(label, style=f"bold {accent}")
         if hint:
-            t.append(f" {hint}", style="dim italic")
-        t.append("…", style="dim")
+            t.append(f" {hint}", style=accent)
+        t.append("  ·  ", style="dim")
+        t.append(_result_summary(name, inp or {}, result), style=accent)
         console.print(t)
     except Exception:
         try:
-            console.print(f"· running {name}…", style="dim")
+            console.print(f"· {name}", style="dim")
         except Exception:
             pass
 

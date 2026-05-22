@@ -1,7 +1,8 @@
 import os as _os
 
-# Suppress huggingface_hub progress bars and transformers warnings.
-_os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+# Quiet transformers/tokenizers noise. HF Hub progress bars are deliberately
+# left ON so large first-run model downloads show progress instead of looking
+# hung — the tqdm monitor thread (the real Metal-crash risk) is killed below.
 _os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 _os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
