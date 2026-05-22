@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Voxel Kyoto</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+        #info {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            color: #fff; font-size: 24px; font-weight: 300; letter-spacing: 4px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.8); pointer-events: none;
+            text-transform: uppercase;
+        }
+        #controls {
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+            color: rgba(255,255,255,0.7); font-size: 14px; text-align: center;
+            pointer-events: none;
+        }
+        #loading {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #1a1a2e; display: flex; align-items: center; justify-content: center;
+            color: #fff; font-size: 18px; z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading Kyoto...</div>
+    <div id="info">京都 - Voxel Kyoto</div>
+    <div id="controls">Drag to rotate · Scroll to zoom · Right-click to pan</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+    (function() {
+        // ==================== SCENE SETUP ====================
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 2000);
+        camera.position.set(80, 60, 100);
+        camera.lookAt(0, 10, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x87CEEB);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // ==================== LIGHTING ====================
+        const ambientLight = new THREE.AmbientLight(0x6688aa, 0.5);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xffeedd, 1.2);
+        sunLight.position.set(50, 80, 30);
+        sunLight.castShadow = true;
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        sunLight.shadow.camera.near = 0.5;
+        sunLight.shadow.camera.far = 500;
+        sunLight.shadow.camera.left = -100;
+        sunLight.shadow.camera.right = 100;
+        sunLight.shadow.camera.top = 100;
+        sunLight.shadow.camera.bottom = -100;
+        scene.add(sunLight);
+
+        const hemiLight = new THREE.HemisphereLight(0x88bbff, 0x445533, 0.4);
+        scene.add(hemiLight);
+
+        // ==================== VOXEL SYSTEM ====================
+        const voxelSize = 1;
+        const voxelGeometry = new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize);
+        const voxelMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff });
+
+        let voxelMeshes = [];
+
+        function createVoxel(x, y, z, color, castShadow = true) {
+            const material = voxelMaterial.clone();
+            material.color.setHex(color);
+            const mesh = new THREE.Mesh(voxelGeometry, material);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = castShadow;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            voxelMeshes.push(mesh);
+            return mesh;
+        }
+
+        function createVoxelGroup(positions, color, castShadow = true) {
+            positions.forEach(pos => createVoxel(pos[0], pos[1], pos[2], color, castShadow));
+        }
+
+        // ==================== COLORS ====================
+        const C = {
+            ground: 0x4a7c59,
+            grass: 0x5a9c69,
+            dirt: 0x8b6914,
+            stone: 0x888888,
+            darkStone: 0x666666,
+            wood: 0x8B4513,
+            darkWood: 0x5C3317,
+            red: 0xCC3333,
+            toriiRed: 0xCC2200,
+            gold: 0xFFD700,
+            white: 0xFFFFFF,
+            roof: 0x2C3E50,
+            darkRoof: 0x1a2535,
+            pink: 0xFFB7C5,
+            cherry: 0xFF69B4,
+            water: 0x4488CC,
+            darkWater: 0x336699,
+            path: 0x998877,
+            bamboo: 0x6B8E23,
+            tree: 0x228B22,
+            darkTree: 0x1a6b1a,
+            brick: 0xA0522D,
+            paper: 0xFFF8DC,
+        };
+
+        // ==================== GROUND PLANE ====================
+        function createGround() {
+            const groundSize = 120;
+            const half = Math.floor(groundSize / 2);
+            for (let x = -half; x <= half; x++) {
+                for (let z = -half; z <= half; z++) {
+                    const height = Math.floor(Math.sin(x * 0.05) * Math.cos(z * 0.05) * 3);
+                    const isGrass = (x + z) % 7 === 0;
+                    createVoxel(x, height, z, isGrass ? C.grass : C.ground, false);
+                }
+            }
+        }
+
+        // ==================== TORII GATES (Fushimi Inari style) ====================
+        function createToriiGate(x, y, z) {
+            const pillarH = 16;
+            const pillarW = 2;
+            const beamH = 3;
+            const beamW = 14;
+
+            // Two pillars
+            for (let i = 0; i < 2; i++) {
+                const px = x + (i === 0 ? -6 : 6);
+                for (let py = 0; py < pillarH; py++) {
+                    for (let pz = -pillarW/2; pz <= pillarW/2; pz++) {
+                        createVoxel(px, y + py, z + pz, C.toriiRed, true);
+                    }
+                }
+            }
+
+            // Top beam (curved look)
+            for (let i = -beamW/2; i <= beamW/2; i++) {
+                const height = Math.abs(i) < 2 ? 2 : 1;
+                for (let py = 0; py < height; py++) {
+                    for (let pz = -beamH/2; pz <= beamH/2; pz++) {
+                        createVoxel(x + i, y + pillarH + py, z + pz, C.toriiRed, true);
+                    }
+                }
+            }
+
+            // Second beam (lower)
+            for (let i = -beamW/2 + 2; i <= beamW/2 - 2; i++) {
+                for (let py = 0; py < 2; py++) {
+                    for (let pz = -beamH/2; pz <= beamH/2; pz++) {
+                        createVoxel(x + i, y + pillarH - 4 + py, z + pz, C.toriiRed, true);
+                    }
+                }
+            }
+
+            // Pillar caps
+            for (let i = 0; i < 2; i++) {
+                const px = x + (i === 0 ? -6 : 6);
+                for (let pz = -pillarW/2; pz <= pillarW/2; pz++) {
+                    createVoxel(px, y + pillarH + 2, z + pz, C.darkWood, true);
+                    createVoxel(px, y + pillarH + 1, z + pz, C.darkWood, true);
+                }
+            }
+        }
+
+        // ==================== KINKAKU-JI (Golden Pavilion) ====================
+        function createGoldenPavilion(x, y, z) {
+            // Foundation platform
+            for (let px = -8; px <= 8; px++) {
+                for (let pz = -8; pz <= 8; pz++) {
+                    createVoxel(x + px, y, z + pz, C.darkStone, true);
+                    createVoxel(x + px, y + 1, z + pz, C.stone, true);
+                }
+            }
+
+            // Three floors
+            for (let floor = 0; floor < 3; floor++) {
+                const floorY = y + 2 + floor * 8;
+                const floorW = 10 - floor;
+                const floorH = 7;
+
+                // Walls
+                for (let px = -floorW; px <= floorW; px++) {
+                    for (let pz = -floorW; pz <= floorW; pz++) {
+                        const isEdge = Math.abs(px) === floorW || Math.abs(pz) === floorW;
+                        if (isEdge) {
+                            for (let py = 0; py < floorH; py++) {
+                                createVoxel(x + px, floorY + py, z + pz, C.gold, true);
+                            }
+                        }
+                    }
+                }
+
+                // Roof
+                const roofY = floorY + floorH;
+                for (let r = 0; r <= 2; r++) {
+                    const roofW = floorW + 2 - r;
+                    for (let px = -roofW; px <= roofW; px++) {
+                        for (let pz = -roofW; pz <= roofW; pz++) {
+                            if (Math.abs(px) + Math.abs(pz) <= roofW + 2) {
+                                createVoxel(x + px, roofY + r, z + pz, C.darkRoof, true);
+                            }
+                        }
+                    }
+                }
+
+                // Roof tip
+                createVoxel(x, roofY + 2, z, C.gold, true);
+            }
+
+            // Stairs
+            for (let i = 0; i < 6; i++) {
+                createVoxel(x + 10, y + 1 + i, z, C.stone, true);
+            }
+        }
+
+        // ==================== TEMPLE BUILDING ====================
+        function createTemple(x, y, z) {
+            const w = 12, d = 10, h = 8;
+
+            // Foundation
+            for (let px = -w; px <= w; px++) {
+                for (let pz = -d; pz <= d; pz++) {
+                    createVoxel(x + px, y, z + pz, C.darkStone, true);
+                }
+            }
+
+            // Walls (white plaster with wood frame)
+            for (let py = 1; py <= h; py++) {
+                for (let px = -w; px <= w; px++) {
+                    for (let pz = -d; pz <= d; pz++) {
+                        const isWall = Math.abs(px) === w || Math.abs(pz) === d;
+                        const isWood = (py % 4 === 0) && (Math.abs(px) === w || Math.abs(pz) === d);
+                        if (isWall) {
+                            createVoxel(x + px, y + py, z + pz, isWood ? C.wood : C.paper, true);
+                        }
+                    }
+                }
+            }
+
+            // Door
+            for (let py = 1; py <= 4; py++) {
+                createVoxel(x, y + py, z + d, C.wood, true);
+                createVoxel(x - 1, y + py, z + d, C.wood, true);
+                createVoxel(x + 1, y + py, z + d, C.wood, true);
+            }
+
+            // Roof
+            for (let py = 0; py <= 4; py++) {
+                const roofW = w + 2 - Math.floor(py / 2);
+                for (let px = -roofW; px <= roofW; px++) {
+                    for (let pz = -d - 2; pz <= d + 2; pz++) {
+                        if (Math.abs(px) + Math.abs(pz) <= roofW + d + 2) {
+                            createVoxel(x + px, y + h + 1 + py, z + pz, C.roof, true);
+                        }
+                    }
+                }
+            }
+
+            // Roof ridge
+            for (let pz = -d - 2; pz <= d + 2; pz++) {
+                createVoxel(x, y + h + 5, z + pz, C.darkRoof, true);
+            }
+        }
+
+        // ==================== CHERRY BLOSSOM TREES ====================
+        function createCherryTree(x, y, z) {
+            // Trunk
+            const trunkH = 8;
+            for (let py = 0; py < trunkH; py++) {
+                createVoxel(x, y + py, z, C.wood, true);
+                if (py > 2) {
+                    createVoxel(x + 1, y + py, z, C.wood, true);
+                    createVoxel(x - 1, y + py, z, C.wood, true);
+                    createVoxel(x, y + py, z + 1, C.wood, true);
+                    createVoxel(x, y + py, z - 1, C.wood, true);
+                }
+            }
+
+            // Canopy (pink spheres made of voxels)
+            const canopyY = y + trunkH;
+            const canopyZ = z;
+            for (let cx = -5; cx <= 5; cx++) {
+                for (let cy = -4; cy <= 2; cy++) {
+                    for (let cz = -5; cz <= 5; cz++) {
+                        const dist = Math.sqrt(cx * cx + cy * cy + cz * cz);
+                        if (dist < 5) {
+                            const color = Math.random() > 0.3 ? C.pink : C.cherry;
+                            createVoxel(x + cx, canopyY + cy, canopyZ + cz, color, true);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ==================== BAMBOO GROUND ====================
+        function createBamboo(x, y, z) {
+            const height = 12 + Math.floor(Math.random() * 6);
+            for (let py = 0; py < height; py++) {
+                createVoxel(x, y + py, z, C.bamboo, true);
+                if (py % 4 === 0) {
+                    createVoxel(x + 1, y + py, z, C.bamboo, true);
+                }
+            }
+            // Leaves
+            for (let i = 0; i < 3; i++) {
+                const ly = y + height - 2 - i;
+                createVoxel(x + (i % 2 === 0 ? 1 : -1), ly, z, C.tree, true);
+            }
+        }
+
+        // ==================== RIVER (Kamo River) ====================
+        function createRiver(x, y, z) {
+            const length = 80;
+            for (let i = 0; i < length; i++) {
+                const wave = Math.sin(i * 0.2) * 1;
+                createVoxel(x + i, y, z + Math.floor(wave), C.water, false);
+                createVoxel(x + i, y - 1, z + Math.floor(wave), C.darkWater, false);
+            }
+        }
+
+        // ==================== MOUNTAINS (Background) ====================
+        function createMountain(x, y, z, size) {
+            for (let px = -size; px <= size; px++) {
+                for (let pz = -size; pz <= size; pz++) {
+                    const dist = Math.sqrt(px * px + pz * pz);
+                    const height = Math.max(0, size - dist) * 1.5;
+                    for (let py = 0; py < height; py++) {
+                        const color = py > height * 0.7 ? C.stone : C.tree;
+                        createVoxel(x + px, y + py, z + pz, color, false);
+                    }
+                }
+            }
+        }
+
+        // ==================== PATHS ====================
+        function createPath(x, y, z, length, direction) {
+            for (let i = 0; i < length; i++) {
+                if (direction === 'x') {
+                    createVoxel(x + i, y, z, C.path, false);
+                } else {
+                    createVoxel(x, y, z + i, C.path, false);
+                }
+            }
+        }
+
+        // ==================== LANTERNS ====================
+        function createLantern(x, y, z) {
+            // Base
+            createVoxel(x, y, z, C.darkStone, true);
+            createVoxel(x, y + 1, z, C.darkStone, true);
+
+            // Pillar
+            for (let py = 2; py < 6; py++) {
+                createVoxel(x, y + py, z, C.wood, true);
+            }
+
+            // Light box
+            for (let px = -1; px <= 1; px++) {
+                for (let pz = -1; pz <= 1; pz++) {
+                    createVoxel(x + px, y + 6, z + pz, C.gold, true);
+                }
+            }
+
+            // Roof
+            createVoxel(x, y + 7, z, C.darkWood, true);
+            createVoxel(x, y + 8, z, C.darkWood, true);
+
+            // Glow
+            const glow = new THREE.PointLight(C.gold, 0.5, 15);
+            glow.position.set(x, y + 6, z);
+            scene.add(glow);
+        }
+
+        // ==================== STONE WALL ====================
+        function createStoneWall(x, y, z, length, height) {
+            for (let i = 0; i < length; i++) {
+                for (let py = 0; py < height; py++) {
+                    createVoxel(x + i, y + py, z, C.stone, true);
+                    if (py % 2 === 0) {
+                        createVoxel(x + i, y + py, z + 1, C.darkStone, true);
+                    }
+                }
+            }
+        }
+
+        // ==================== BRIDGE ====================
+        function createBridge(x, y, z) {
+            const width = 6;
+            const length = 20;
+
+            // Arch
+            for (let i = 0; i < length; i++) {
+                const arch = Math.sin(i / length * Math.PI) * 3;
+                for (let w = -width/2; w <= width/2; w++) {
+                    createVoxel(x + i, y + arch, z + w, C.wood, true);
+                }
+            }
+
+            // Railings
+            for (let i = 0; i < length; i++) {
+                const arch = Math.sin(i / length * Math.PI) * 3;
+                for (let h = 0; h < 3; h++) {
+                    createVoxel(x + i, y + arch + 1 + h, z - width/2, C.wood, true);
+                    createVoxel(x + i, y + arch + 1 + h, z + width/2, C.wood, true);
+                }
+            }
+        }
+
+        // ==================== STATUE (Kannon-style) ====================
+        function createStatue(x, y, z) {
+            // Base
+            for (let px = -2; px <= 2; px++) {
+                for (let pz = -2; pz <= 2; pz++) {
+                    createVoxel(x + px, y, z + pz, C.stone, true);
+                }
+            }
+
+            // Body
+            for (let py = 1; py <= 6; py++) {
+                const w = py < 4 ? 1 : 2;
+                for (let px = -w; px <= w; px++) {
+                    for (let pz = -w; pz <= w; pz++) {
+                        createVoxel(x + px, y + py, z + pz, C.white, true);
+                    }
+                }
+            }
+
+            // Head
+            createVoxel(x, y + 7, z, C.white, true);
+            createVoxel(x, y + 8, z, C.gold, true);
+
+            // Arms
+            createVoxel(x - 3, y + 4, z, C.white, true);
+            createVoxel(x + 3, y + 4, z, C.white, true);
+        }
+
+        // ==================== BUILD THE WORLD ====================
+        function buildWorld() {
+            const baseY = 2;
+
+            // Ground
+            createGround();
+
+            // Mountains (background)
+            createMountain(-50, baseY, -60, 30);
+            createMountain(50, baseY, -60, 25);
+            createMountain(-30, baseY, -70, 35);
+            createMountain(40, baseY, -65, 28);
+
+            // River (Kamo River flowing north-south)
+            createRiver(25, baseY, -40, 80, 'z');
+
+            // Paths
+            createPath(-20, baseY + 1, 0, 40, 'x');
+            createPath(0, baseY + 1, -30, 60, 'z');
+
+            // Stone walls
+            createStoneWall(-25, baseY + 1, -25, 50, 3);
+
+            // Torii gates (Fushimi Inari style - row of them)
+            for (let i = 0; i < 8; i++) {
+                createToriiGate(-15, baseY + 1, -25 + i * 6);
+            }
+
+            // Golden Pavilion (Kinkaku-ji)
+            createGoldenPavilion(30, baseY + 1, 15);
+
+            // Temple building
+            createTemple(-20, baseY + 1, 15);
+
+            // Bridge over river
+            createBridge(20, baseY + 1, 0);
+
+            // Cherry trees
+            for (let i = 0; i < 15; i++) {
+                const tx = -40 + Math.floor(Math.random() * 80);
+                const tz = -30 + Math.floor(Math.random() * 60);
+                createCherryTree(tx, baseY + 1, tz);
+            }
+
+            // Bamboo grove
+            for (let i = 0; i < 20; i++) {
+                const bx = -45 + Math.floor(Math.random() * 10);
+                const bz = 20 + Math.floor(Math.random() * 20);
+                createBamboo(bx, baseY + 1, bz);
+            }
+
+            // Lanterns
+            for (let i = 0; i < 6; i++) {
+                createLantern(-20 + i * 8, baseY + 1, 25);
+            }
+
+            // Statue
+            createStatue(30, baseY + 1, 35);
+
+            // Remove loading screen
+            setTimeout(() => {
+                document.getElementById('loading').style.display = 'none';
+            }, 1000);
+        }
+
+        // ==================== ORBIT CONTROLS (Simple) ====================
+        let isDragging = false;
+        let isPanning = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let rotation = { x: 0.3, y: 0.5 };
+        let zoom = 150;
+        let pan = { x: 0, y: 0 };
+
+        renderer.domElement.addEventListener('mousedown', (e) => {
+            if (e.button === 0) isDragging = true;
+            if (e.button === 2) isPanning = true;
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        });
+
+        renderer.domElement.addEventListener('mouseup', () => {
+            isDragging = false;
+            isPanning = false;
+        });
+
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            const dx = e.clientX - previousMousePosition.x;
+            const dy = e.clientY - previousMousePosition.y;
+
+            if (isDragging) {
+                rotation.y += dx * 0.005;
+                rotation.x += dy * 0.005;
+                rotation.x = Math.max(-1.5, Math.min(1.5, rotation.x));
+            }
+
+            if (isPanning) {
+                pan.x += dx * 0.1;
+                pan.y -= dy * 0.1;
+            }
+
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        });
+
+        renderer.domElement.addEventListener('wheel', (e) => {
+            zoom += e.deltaY * 0.1;
+            zoom = Math.max(50, Math.min(300, zoom));
+        });
+
+        renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // ==================== ANIMATION LOOP ====================
+        let time = 0;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.01;
+
+            // Camera orbit
+            camera.position.x = Math.cos(rotation.y) * zoom + pan.x;
+            camera.position.z = Math.sin(rotation.y) * zoom + pan.y;
+            camera.position.y = Math.sin(rotation.x) * zoom + 30;
+            camera.lookAt(0 + pan.x, 10, 0 + pan.y);
+
+            // Subtle light animation
+            sunLight.intensity = 1.2 + Math.sin(time) * 0.1;
+
+            renderer.render(scene, camera);
+        }
+
+        // ==================== RESIZE HANDLER ====================
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // ==================== START ====================
+        buildWorld();
+        animate();
+
+    })();
+    </script>
+</body>
+</html>
