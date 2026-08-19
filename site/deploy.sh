@@ -19,11 +19,14 @@ else
 fi
 
 $KUBECTL apply -f k8s.yaml
+# Server-side apply: a client-side apply stores a full copy of the object in
+# the last-applied-configuration annotation, and the base64 screenshot puts
+# that over the 256 KB annotation limit.
 $KUBECTL create configmap minimlx-site \
   --namespace minimlx \
   --from-file="$STAGE/index.html" \
   --from-file="$STAGE/preview.png" \
-  --dry-run=client -o yaml | $KUBECTL apply -f -
+  --dry-run=client -o yaml | $KUBECTL apply --server-side --force-conflicts -f -
 
 $KUBECTL -n minimlx patch deployment minimlx-web --type=merge \
   -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"minimlx.com/content-hash\":\"$HASH\"}}}}}"
