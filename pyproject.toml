@@ -37,6 +37,14 @@ dflash = [
 mtp = [
     "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm",
 ]
+# MTPLX runtime, for models that ship their own multi-token-prediction head.
+# Required by the default model (`qwen38-27b-mtplx`), so this is effectively a
+# core dependency now. It wants mlx>=0.32 while `dflash` pins mlx==0.31.2; pip
+# will resolve to 0.32, which dflash tolerates in practice (verified against
+# gemma4 and gemma4-moe on 0.32.1) even though its metadata says otherwise.
+mtplx = [
+    "mtplx>=2.8.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/bravenewxyz/minimlx"

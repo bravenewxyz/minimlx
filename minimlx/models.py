@@ -8,19 +8,88 @@ from rich.console import Console
 from minimlx.aliases import LOCAL_MODELS_DIR
 
 
+# Files worth fetching for any model. `*.jinja` matters for the Qwen 3.x
+# family, which ships its chat template as a standalone `chat_template.jinja`
+# rather than inline in `tokenizer_config.json`.
+_MODEL_FILES = [
+    "*.json", "*.safetensors", "*.model", "*.txt",
+    "tokenizer*", "*.jinja", "*.py", "*.md",
+]
+
+
+def _is_local_ref(model_id: str) -> bool:
+    """Is this a filesystem path rather than a Hub repo id?"""
+    return model_id.startswith(("/", "~", ".")) or Path(model_id).expanduser().exists()
+
+
+def split_subfolder(model_id: str) -> tuple[str, str | None]:
+    """Split an `org/repo/sub/dir` reference into `(repo_id, subfolder)`.
+
+    Some publishers ship every precision of one model in a single repo, one
+    subfolder per quant (`4bit/`, `8bit/`, `bf16/`, ...) — see the
+    `qwen38-*` aliases. A bare `org/repo` has no subfolder and is returned
+    unchanged; so is any local path.
+    """
+    if _is_local_ref(model_id):
+        return model_id, None
+    parts = [p for p in model_id.split("/") if p]
+    if len(parts) < 3:
+        return model_id, None
+    return "/".join(parts[:2]), "/".join(parts[2:])
+
+
+def resolve(model_id: str, *, local_dir: bool = False) -> str:
+    """Return something `mlx_lm.load()` can open.
+
+    Local paths and plain `org/repo` ids pass straight through. An
+    `org/repo/subfolder` reference is materialized into the HF cache — that
+    subfolder only — and handed back as a concrete directory, because
+    mlx-lm's loader has no notion of a subfolder inside a repo.
+
+    `local_dir=True` additionally materializes plain `org/repo` ids, for
+    loaders that only accept a directory (the `mtplx` runtime is one).
+    """
+    repo, subfolder = split_subfolder(model_id)
+    if subfolder is None and (not local_dir or _is_local_ref(model_id)):
+        return model_id
+    from huggingface_hub import snapshot_download
+
+    prefix = "" if subfolder is None else f"{subfolder}/"
+    patterns = [f"{prefix}{name}" for name in _MODEL_FILES]
+
+    def _target(snapshot: str) -> Path:
+        root = Path(snapshot)
+        return root if subfolder is None else root / subfolder
+
+    # Prefer the cache so a warm start costs no network round-trips. A repo
+    # can be cached for one quant and not another, so confirm this subfolder
+    # actually landed before trusting the hit.
+    try:
+        cached = _target(
+            snapshot_download(repo, allow_patterns=patterns, local_files_only=True)
+        )
+        if (cached / "config.json").exists() and any(cached.glob("*.safetensors")):
+            return str(cached)
+    except Exception:
+        pass
+    return str(_target(snapshot_download(repo, allow_patterns=patterns)))
+
+
 def pull(repo_id: str, console: Console, revision: str | None = None) -> str:
     """Download a model to the HF cache."""
     from huggingface_hub import snapshot_download
 
+    repo, subfolder = split_subfolder(repo_id)
+    patterns = _MODEL_FILES if subfolder is None else [f"{subfolder}/{p}" for p in _MODEL_FILES]
+
     console.print(f"[cyan]pulling[/] [bold]{repo_id}[/]")
     path = snapshot_download(
-        repo_id=repo_id,
+        repo_id=repo,
         revision=revision,
-        allow_patterns=[
-            "*.json", "*.safetensors", "*.model", "*.txt",
-            "tokenizer*", "*.py", "*.md",
-        ],
+        allow_patterns=patterns,
     )
+    if subfolder is not None:
+        path = str(Path(path) / subfolder)
     console.print(f"[green]✓[/] [dim]{path}[/]")
     return path
 

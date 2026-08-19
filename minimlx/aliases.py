@@ -36,6 +36,28 @@ DEFAULTS: dict[str, str] = {
     "qwen36-35b-claude-opus-abliterated":     str(LOCAL_MODELS_DIR / "qwen36-35b-claude-opus-abliterated-4bit"),
     "qwen36-35b-claude-opus-abliterated-max": str(LOCAL_MODELS_DIR / "qwen36-35b-claude-opus-abliterated-bf16"),
 
+    # Qwen 3.8 abliterated (PocketAiHub). These are multi-quant repos: one
+    # repo holds every precision, each in its own subfolder, so the alias
+    # carries the subfolder and `models.resolve()` materializes it. Configs
+    # are VLM-shaped (`Qwen3_5ForConditionalGeneration` + `text_config`);
+    # mlx-lm's `qwen3_5` module reads the nested text config and drops the
+    # vision tower, so these load text-only with no mlx-vlm involved.
+    "qwen38-27b":       "PocketAiHub/Qwen3.8-27B-Abliterated-MLX/8bit",
+    "qwen38-27b-6bit":  "PocketAiHub/Qwen3.8-27B-Abliterated-MLX/6bit",
+    "qwen38-27b-4bit":  "PocketAiHub/Qwen3.8-27B-Abliterated-MLX/4bit",
+    "qwen38-27b-2bit":  "PocketAiHub/Qwen3.8-27B-Abliterated-MLX/2bit",
+    "qwen38-27b-max":   "PocketAiHub/Qwen3.8-27B-Abliterated-MLX/bf16",
+    "qwen38-9b":        "PocketAiHub/Qwen3.8-9B-Abliterated-MLX/8bit",
+    "qwen38-9b-4bit":   "PocketAiHub/Qwen3.8-9B-Abliterated-MLX/4bit",
+    "qwen38-9b-max":    "PocketAiHub/Qwen3.8-9B-Abliterated-MLX/bf16",
+
+    # Same 27B trunk, rebuilt for MTPLX: a mixed 4/8-bit quant that ships its
+    # own multi-token-prediction head (`mtp.safetensors`) instead of needing a
+    # separate draft model. The engine routes it through the `mtplx` runtime,
+    # which needs `pip install -e .[mtplx]`; without that it still loads on
+    # plain mlx-lm, just autoregressively (mlx-lm ignores the MTP tensors).
+    "qwen38-27b-mtplx": "PocketAiHub/Qwen3.8-27B-Abliterated-MTPLX-Optimized-Speed",
+
     # Speech-to-text (IBM Granite 4.0 1B Speech — Apache 2.0, #2 on HF Open
     # ASR Leaderboard at 5.52 WER, en/fr/de/es/pt/ja/…). Auto language detect.
     "granite-stt": "ibm-granite/granite-4.0-1b-speech",

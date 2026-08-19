@@ -428,6 +428,9 @@ def run_chat(
                 # memory doesn't double. If the new load fails we're modelless
                 # and must break the chat loop — safer than silently continuing.
                 old_model_id = engine.model_id
+                # An MTPLX engine's weights belong to its worker thread, so
+                # `del` alone would not free them.
+                engine.release()
                 del engine
                 _mlx_reclaim()
                 try:

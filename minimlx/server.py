@@ -95,8 +95,17 @@ _PINNED = False  # If True, every request uses _DEFAULT_MODEL regardless of
 
 
 def _short_model(name: str) -> str:
-    """Trim a repo path/id to a short label for log lines."""
-    return name.rsplit("/", 1)[-1]
+    """Trim a repo path/id to a short label for log lines.
+
+    Multi-quant repos put the precision in a subfolder, so the last segment
+    alone would log a bare `4bit`; keep the repo name with it. Local paths
+    still shorten to their directory name.
+    """
+    from minimlx.models import split_subfolder
+
+    repo, subfolder = split_subfolder(name)
+    tail = repo.rstrip("/").rsplit("/", 1)[-1]
+    return f"{tail}/{subfolder}" if subfolder else tail
 
 
 def _log_stats(
@@ -156,6 +165,14 @@ def _prepare_cache(
     during prefill + generation. On store we save the combined cache so
     future lookups return both portions already warm.
     """
+    # DFlash, MTP and MTPLX all build and own their KV caches inside their own
+    # generate loops and ignore the `prompt_cache` argument, so there is
+    # nothing here to reuse. MTPLX in particular would not even survive the
+    # attempt: its `engine.model` is an MTPLXRuntime, not an mlx-lm module,
+    # and `make_prompt_cache` reaches straight for `model.layers`.
+    if engine._is_mtplx or engine._is_mtp or engine._is_dflash:
+        return None, 0
+
     from mlx_lm.models.cache import make_prompt_cache
     try:
         _, tokens = engine.tokenize_prompt(messages, tools=tools)
@@ -320,6 +337,9 @@ def _engine_for(model_name: str | None) -> Iterator[tuple[Engine, PromptCacheSto
                 # a background C thread after gc.collect() has released the
                 # model arrays, tripping PyThreadState_Get with GIL-released.
                 _sync_metal()
+                # An MTPLX engine's weights belong to its worker thread, so
+                # dropping the Engine alone would not free them.
+                _current_engine.release()
                 _current_engine = None
                 _current_cache_store = None
                 gc.collect()

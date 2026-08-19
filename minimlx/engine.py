@@ -4,6 +4,7 @@ from typing import Any, Iterator, Optional
 
 from minimlx import defaults as _D
 from minimlx.defaults import WIRED_LIMIT_BYTES as _WIRED_LIMIT_BYTES
+from minimlx.models import resolve as _resolve_repo
 
 
 def _is_dflash_repo(repo_id: str | None) -> bool:
@@ -31,6 +32,129 @@ def _is_mtp_repo(repo_id: str | None) -> bool:
         return False
     tail = repo_id.rstrip("/").rsplit("/", 1)[-1].lower()
     return "assistant" in tail or tail.endswith("-mtp")
+
+
+def _is_mtplx_repo(repo_id: str | None) -> bool:
+    """Heuristic: is `repo_id` an MTPLX build with a native MTP head?
+
+    MTPLX artifacts carry the multi-token-prediction head in the model repo
+    itself (`mtp.safetensors` alongside the trunk) instead of pairing with a
+    separate draft model, and they ship as `<base>-MTPLX-<profile>`. They
+    need the `mtplx` runtime to use that head; plain mlx-lm loads the same
+    weights but silently drops the MTP tensors and decodes autoregressively.
+    """
+    if not repo_id:
+        return False
+    tail = repo_id.rstrip("/").rsplit("/", 1)[-1].lower()
+    return "mtplx" in tail
+
+
+class _DropMtplxChatter:
+    """Stdout proxy that swallows mtplx's unsolicited `[mtplx] ...` lines.
+
+    mtplx prints a compiled-verify prewarm report straight to stdout from
+    inside the verify path — no env gate, no logger. That fires on the
+    generation thread mid-stream, so it lands in the middle of a rendered
+    answer ("The[mtplx] compiled-verify prewarm {...} user is asking..."). It
+    cannot be redirected per-thread, since `sys.stdout` is process-global and
+    the consumer is rendering concurrently. Filtering the one prefix is the
+    surgical option: `print()` resolves `sys.stdout` when it is called, while
+    rich's Console captured the real stream when it was built, so this
+    intercepts mtplx's chatter and nothing else.
+    """
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+        self._dropped = False
+
+    def write(self, text: str) -> int:
+        if text.startswith("[mtplx] "):
+            self._dropped = True
+            return len(text)
+        # `print()` emits its terminator as a separate write; drop the
+        # newline belonging to a line we just swallowed.
+        if self._dropped:
+            self._dropped = False
+            if text == "\n":
+                return 1
+        return self._wrapped.write(text)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+
+def _mtplx_drop_caches() -> None:
+    """Let go of the compiled verify graphs that pin an MTPLX model's weights.
+
+    mtplx memoizes compiled verify steps and Metal kernels in module globals,
+    and those closures hold the model. Dropping the runtime and running a full
+    gc frees exactly nothing — measured on the 27B build, active unified
+    memory sat at 20.37 GB after `rt = None; gc.collect(); mx.clear_cache()`
+    and fell to 0.00 GB the moment these were cleared.
+
+    There is no public teardown API, so this reaches for private names and
+    shrugs off anything that has moved. The cost of missing them is a model's
+    worth of memory held until the process exits; the cost of clearing them
+    needlessly is recompiling a handful of kernels.
+    """
+    import gc
+    import sys
+
+    for module, attr in (
+        ("mtplx.graphbank", "_SHARED_VERIFY_STEPS"),
+        ("mtplx.graphbank", "_PREWARMED_BUCKETS"),
+        ("mtplx.verify_kernels", "_KERNEL_CACHE"),
+    ):
+        try:
+            getattr(sys.modules[module], attr).clear()
+        except Exception:
+            pass
+    gc.collect()
+
+
+def _quiet_mtplx_stdout() -> None:
+    """Install the stdout filter once per process."""
+    import sys
+
+    if not isinstance(sys.stdout, _DropMtplxChatter):
+        sys.stdout = _DropMtplxChatter(sys.stdout)
+
+
+def _mtplx_meta(path: str) -> dict:
+    """Load an MTPLX build's `mtplx_runtime.json`, or `{}` if it has none."""
+    import json
+    from pathlib import Path as _Path
+
+    try:
+        return json.loads((_Path(path) / "mtplx_runtime.json").read_text())
+    except Exception:
+        return {}
+
+
+def _mtplx_depth_for(meta: dict, default: int = 3) -> int:
+    """Pick the speculative depth for an MTPLX build.
+
+    `mtplx_runtime.json` records both the depth the publisher measured as
+    fastest (`speed_evidence.depth`) and the ceiling the MTP head was built
+    for (`mtp_depth_max`). Prefer the measured depth, clamped to the ceiling
+    — drafting deeper than the head supports just burns forward passes on
+    tokens it cannot propose. Optimal depth is machine-specific, so
+    `MINIMLX_MTPLX_DEPTH` overrides both.
+    """
+    import os
+
+    override = os.environ.get("MINIMLX_MTPLX_DEPTH", "").strip()
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    ceiling = int(meta.get("mtp_depth_max") or default)
+    depth = default
+    evidence = meta.get("speed_evidence")
+    if isinstance(evidence, dict) and evidence.get("depth"):
+        depth = int(evidence["depth"])
+    return max(1, min(depth, ceiling))
 
 
 @dataclass
@@ -83,12 +207,22 @@ class Engine:
         self._last_stats: Optional[Stats] = None
         self._is_dflash = _is_dflash_repo(draft_model_id)
         self._is_mtp = _is_mtp_repo(draft_model_id)
+        # MTPLX is a property of the *target*, not the draft: the MTP head
+        # rides along inside the model repo.
+        self._is_mtplx = _is_mtplx_repo(model_id)
         self._mvlm_processor: Any = None  # mlx-vlm processor when MTP is active
+        self._mtplx_req: Any = None       # job queue into the mtplx worker thread
+        self._mtplx_depth = 0             # tuned speculative depth for that runtime
+        self._mtplx_opts: dict = {}       # verify config the profile env requires
 
     def load(self) -> None:
         if self._loaded:
             return
         self._configure_download_progress()
+
+        if self._is_mtplx:
+            self._load_mtplx()
+            return
 
         if self._is_mtp:
             # MTP needs mlx-vlm's wrapper because the drafter consumes the
@@ -109,7 +243,7 @@ class Engine:
                 _mx.set_wired_limit(_WIRED_LIMIT_BYTES)
             except Exception:
                 pass
-            self.model, self._mvlm_processor = mvlm_load(self.model_id)
+            self.model, self._mvlm_processor = mvlm_load(_resolve_repo(self.model_id))
             self.tokenizer = (
                 self._mvlm_processor.tokenizer
                 if hasattr(self._mvlm_processor, "tokenizer")
@@ -128,7 +262,7 @@ class Engine:
             _mx.set_wired_limit(_WIRED_LIMIT_BYTES)
         except Exception:
             pass
-        self.model, self.tokenizer = mlx_load(self.model_id)
+        self.model, self.tokenizer = mlx_load(_resolve_repo(self.model_id))
         self.draft_model = None
         if self.draft_model_id:
             if self._is_dflash:
@@ -141,10 +275,210 @@ class Engine:
                         "  pip install \"dflash[mlx] @ git+https://github.com/z-lab/dflash\"\n"
                         f"(original error: {e})"
                     ) from e
-                self.draft_model = dflash_load_draft(self.draft_model_id)
+                self.draft_model = dflash_load_draft(_resolve_repo(self.draft_model_id))
             else:
-                self.draft_model, _ = mlx_load(self.draft_model_id)
+                self.draft_model, _ = mlx_load(_resolve_repo(self.draft_model_id))
         self._loaded = True
+
+    def _load_mtplx(self) -> None:
+        """Load an MTPLX artifact onto a thread that then owns it for good.
+
+        MTPLX builds carry their multi-token-prediction head in the model repo
+        (`mtp.safetensors` beside the trunk), so the model drafts ahead of
+        itself with no second model resident and verifies each block by
+        rejection sampling — the output distribution is unchanged, only the
+        wall-clock moves. mlx-lm reads the same trunk happily but drops the
+        MTP tensors in `sanitize()`, losing the entire speedup; hence a
+        dedicated backend rather than a draft-model pairing.
+
+        Everything that touches MLX happens on one long-lived worker thread,
+        because the runtime profile installs verify-specialized Metal kernels
+        that are thread-affine. Loading on one thread and generating on
+        another, or letting a per-request thread exit underneath them, aborts
+        the process (SIGTRAP, "PyThreadState_Get ... the GIL is released") —
+        and does it *after* printing a perfectly good answer, which is a
+        miserable way to find out. A single thread that loads, generates, and
+        never exits keeps the profile's throughput and live streaming both.
+        """
+        import queue
+        import threading
+
+        try:
+            import mtplx  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "MTPLX model requested but the `mtplx` package is not installed. "
+                "Install with:\n"
+                "  pip install mtplx\n"
+                "It pulls mlx>=0.32, above dflash's declared mlx==0.31.2 pin; "
+                "the `*-dflash` drafts run fine there in practice.\n"
+                f"(original error: {e})"
+            ) from e
+
+        _quiet_mtplx_stdout()
+
+        # `mtplx.load` takes a directory, not a Hub id, so materialize first.
+        path = _resolve_repo(self.model_id, local_dir=True)
+        meta = _mtplx_meta(path)
+
+        req: Any = queue.Queue()
+        self._mtplx_req = req
+        ready: Any = queue.Queue()
+        # The worker takes the queue as an argument and holds it for life.
+        # It must not reach back through `self`: `release()` clears
+        # `self._mtplx_req`, and a worker reading the attribute each loop
+        # would raise, exit, and take the thread-affine verify kernels down
+        # with it — the SIGTRAP this whole design exists to avoid.
+        threading.Thread(
+            target=self._mtplx_worker,
+            args=(path, meta, ready, req),
+            name="mtplx-runtime",
+            daemon=True,
+        ).start()
+
+        kind, payload = ready.get()
+        if kind == "error":
+            self._mtplx_req = None
+            raise payload
+        self.tokenizer, self._mtplx_depth, self._mtplx_opts = payload
+        self.model = None       # the runtime lives on the worker, not here
+        self.draft_model = None
+        self._loaded = True
+
+    def _mtplx_worker(self, path: str, meta: dict, ready: Any, req: Any) -> None:
+        """Own an MTPLX runtime for this Engine's lifetime. Never returns."""
+        import os
+
+        opts: dict = {}
+        try:
+            # A build names the runtime profile it was tuned against, and a
+            # profile is nothing but env vars: verify-specialized matmul
+            # kernels, compiled verify, packed-GQA attention. They are read
+            # while the model loads and while kernels compile, so they have to
+            # be set before the load.
+            #
+            # The profile and the generate options are one unit, not two
+            # knobs. `turbo` sets MTPLX_SKIP_VERIFY_SNAPSHOT=1, which is only
+            # correct under the verify strategy mtplx's own CLI pairs it with;
+            # applying the profile and then calling `generate_mtpk` with its
+            # conservative library defaults raises "capture commit failed" on
+            # the first rejected block. Applied together they are worth ~1.9x
+            # on this model (measured M5 Max, 27B Optimized-Speed, depth 3:
+            # 26 -> 50 tok/s), which is most of the point of an MTPLX build.
+            #
+            # `MINIMLX_MTPLX_SAFE=1` falls back to mtplx's library defaults,
+            # for an artifact whose architecture these settings don't suit.
+            profile = meta.get("recommended_profile")
+            if profile and not os.environ.get("MINIMLX_MTPLX_SAFE", "").strip():
+                try:
+                    from mtplx.profiles import apply_profile_env
+
+                    apply_profile_env(str(profile))
+                    opts = {
+                        "verify_strategy": "capture_commit",
+                        "verify_core": "linear-gdn-from-conv-tape",
+                        "mtp_history_policy": "committed",
+                    }
+                except Exception:
+                    opts = {}
+
+            import mlx.core as mx
+
+            try:
+                mx.set_wired_limit(_WIRED_LIMIT_BYTES)
+            except Exception:
+                pass
+
+            import mtplx
+
+            rt = mtplx.load(path, mtp=True)
+            ready.put(("ready", (rt.tokenizer, _mtplx_depth_for(meta), opts)))
+        except BaseException as exc:
+            ready.put(("error", exc))
+            return
+
+        from mtplx.generation import generate_mtpk
+        from mtplx.sampling import SamplerConfig
+
+        while True:
+            job = req.get()
+            ack = job.get("release")
+            if ack is not None:
+                # Released. Drop the weights but stay parked — exiting this
+                # thread would tear the verify kernels down with it.
+                rt = None
+                _mtplx_drop_caches()
+                try:
+                    mx.clear_cache()
+                except Exception:
+                    pass
+                ack.put(True)
+                continue
+
+            out_q = job["out"]
+            if rt is None:
+                out_q.put(("error", RuntimeError("this MTPLX runtime was released")))
+                continue
+            try:
+                mx.reset_peak_memory()
+            except Exception:
+                pass
+
+            # Detokenize here rather than in the consumer: MLX drops the GIL
+            # across kernel launches, and keeping every tokenizer touch on the
+            # thread that owns the model leaves the consumer nothing but
+            # finished strings to handle.
+            detok = rt.tokenizer.detokenizer
+            detok.reset()
+
+            def _on_tokens(tokens: list[int], _q: Any = out_q) -> None:
+                for tok in tokens:
+                    detok.add_token(int(tok))
+                _q.put(("chunk", (detok.last_segment, len(tokens),
+                                  int(tokens[-1]) if tokens else 0)))
+
+            try:
+                out = generate_mtpk(
+                    rt,
+                    job["prompt_ids"],
+                    max_tokens=job["max_tokens"],
+                    sampler=SamplerConfig(temperature=job["temp"], top_p=job["top_p"]),
+                    speculative_depth=self._mtplx_depth,
+                    seed=job["seed"],
+                    token_callback=_on_tokens,
+                    abort_check=job["stop"].is_set,
+                    **opts,
+                )
+                detok.finalize()
+                out_q.put(("done", (out, detok.last_segment)))
+            except BaseException as exc:
+                out_q.put(("error", exc))
+
+    def release(self) -> None:
+        """Drop model weights held by a background runtime, if any.
+
+        Callers that swap models mid-process (chat's `/models`, the server's
+        model switch) drop the old Engine first so peak unified memory doesn't
+        carry two models at once. That is not enough for the MTPLX backend:
+        its weights belong to a worker thread, which cannot simply be retired
+        because exiting it tears down thread-affine Metal kernels and aborts
+        the process. So ask it to let go instead. Safe to call on any Engine,
+        any number of times.
+        """
+        import queue
+
+        req, self._mtplx_req = self._mtplx_req, None
+        if req is None:
+            return
+        # Wait for the worker to actually let go: the caller's next move is
+        # loading another model, and the whole point is not to hold two at
+        # once.
+        ack: Any = queue.Queue()
+        req.put({"release": ack})
+        try:
+            ack.get(timeout=60)
+        except Exception:
+            pass
 
     def _configure_download_progress(self) -> None:
         """Show Hugging Face download bars only when something actually needs
@@ -164,8 +498,12 @@ class Engine:
             # Local paths and bare names have nothing to fetch from the Hub.
             if "/" not in repo or repo.startswith(("/", "~", ".")):
                 return True
+            from minimlx.models import split_subfolder
+
+            repo_id, subfolder = split_subfolder(repo)
+            probe = "config.json" if subfolder is None else f"{subfolder}/config.json"
             try:
-                return isinstance(try_to_load_from_cache(repo, "config.json"), str)
+                return isinstance(try_to_load_from_cache(repo_id, probe), str)
             except Exception:
                 return True
 
@@ -231,6 +569,16 @@ class Engine:
         prompt_cache: Any = None,
     ) -> Iterator[Chunk]:
         self.load()
+        if self._is_mtplx:
+            yield from self._stream_mtplx(
+                messages,
+                max_tokens=max_tokens,
+                temp=temp,
+                top_p=top_p,
+                tools=tools,
+                seed=seed,
+            )
+            return
         if self._is_mtp:
             yield from self._stream_mtp(
                 messages,
@@ -357,6 +705,110 @@ class Engine:
                 peak_memory_gb=peak_bytes / 1e9,
                 finish_reason=str(getattr(last, "finish_reason", "unknown")),
             )
+
+    def _stream_mtplx(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        temp: float,
+        top_p: float,
+        tools: list[dict] | None,
+        seed: int | None,
+    ) -> Iterator[Chunk]:
+        """Stream through the MTPLX runtime's native multi-token prediction.
+
+        The runtime lives on the worker thread started by `_load_mtplx`; this
+        hands it a job and drains the results. A result payload is a *delta* —
+        the tokens accepted that round, stop tokens already stripped — which
+        is why `n_tokens` is the block length: at draft depth k one round can
+        commit up to k+1 tokens, and a live counter adding 1 per chunk would
+        undercount by the exact factor MTPLX exists to deliver.
+        """
+        import queue
+        import secrets
+        import threading
+        import time
+
+        prompt = self._build_prompt(messages, tools=tools)
+        prompt_ids = list(self.tokenizer.encode(prompt))
+
+        prompt_tail = prompt.rstrip()
+        synthetic_prefix: str | None = None
+        if prompt_tail.endswith("<think>"):
+            synthetic_prefix = "<think>\n"
+        elif prompt_tail.endswith("<|channel>thought"):
+            synthetic_prefix = "<|channel>thought\n"
+
+        if self._mtplx_req is None:
+            raise RuntimeError("this MTPLX runtime was released")
+
+        out_q: Any = queue.Queue()
+        # A consumer that stops early (Ctrl-C, chat `/stop`, a client
+        # disconnect) would otherwise leave the worker generating against a
+        # 27B model with nobody reading. `abort_check` is polled per round.
+        stop = threading.Event()
+        self._mtplx_req.put({
+            "prompt_ids": prompt_ids,
+            "max_tokens": max_tokens if max_tokens > 0 else 1_000_000,
+            "temp": temp,
+            "top_p": top_p,
+            # mtplx seeds its own RNG and defaults to 0, so leaving it unset
+            # would make every unseeded generation identical. Draw one.
+            "seed": secrets.randbelow(2 ** 31) if seed is None else int(seed),
+            "out": out_q,
+            "stop": stop,
+        })
+
+        if synthetic_prefix is not None:
+            yield Chunk(text=synthetic_prefix, token=-1, tps=0.0, n_tokens=0)
+
+        started = time.perf_counter()
+        produced = 0
+        out = None
+        tail = ""
+        try:
+            while True:
+                kind, payload = out_q.get()
+                if kind == "error":
+                    raise payload
+                if kind == "done":
+                    out, tail = payload
+                    break
+                text, n_tokens, last_token = payload
+                produced += n_tokens
+                elapsed = time.perf_counter() - started
+                yield Chunk(
+                    text=text,
+                    token=last_token,
+                    tps=produced / elapsed if elapsed > 0 else 0.0,
+                    n_tokens=n_tokens,
+                )
+        finally:
+            stop.set()
+
+        if tail:
+            yield Chunk(text=tail, token=-1, tps=0.0, n_tokens=0)
+
+        import mlx.core as mx
+
+        try:
+            peak_bytes = int(mx.get_peak_memory())
+        except Exception:
+            peak_bytes = 0
+        stats = getattr(out, "stats", None)
+        # `decode_tok_s` is the steady-state decode rate; `tok_s` folds in
+        # prefill, which would understate the gain on short generations.
+        gen_tps = float(
+            getattr(stats, "decode_tok_s", 0.0) or getattr(stats, "tok_s", 0.0) or 0.0
+        )
+        self._last_stats = Stats(
+            prompt_tokens=len(prompt_ids),
+            generated_tokens=int(getattr(stats, "generated_tokens", produced) or produced),
+            prompt_tps=float(getattr(stats, "prompt_tps", 0.0) or 0.0),
+            generation_tps=gen_tps,
+            peak_memory_gb=peak_bytes / 1e9,
+            finish_reason=str(getattr(out, "finish_reason", None) or "stop"),
+        )
 
     def _stream_mtp(
         self,
