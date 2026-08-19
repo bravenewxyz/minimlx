@@ -9,234 +9,309 @@
 <meta property="og:description" content="57 tokens/sec from a 27B model on a laptop. Fully on-device, via MLX.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://minimlx.com/">
-<meta name="theme-color" content="#0b0d10">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%230b0d10'/><text x='32' y='44' font-size='38' font-family='ui-monospace,monospace' fill='%2360d3a4' text-anchor='middle'>&gt;_</text></svg>">
+<meta name="theme-color" content="#141110">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='13' fill='%23141110'/><text x='31' y='45' font-size='40' font-family='ui-monospace,monospace' fill='%2385c2ce' text-anchor='middle'>&#8250;</text></svg>">
 <style>
+  /* Palette sampled from minimlx's own terminal output: a warm near-black,
+     not the usual cool slate, with the teal it draws panels and tool calls in
+     and the ember it uses for the cursor. */
   :root{
-    --bg:#0b0d10; --panel:#12161b; --line:#222a33;
-    --fg:#e6edf3; --muted:#8b98a5; --dim:#616d7a;
-    --accent:#60d3a4; --accent-dim:#2f8f6c; --warm:#e0b877;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    --bg:#141110; --bg-lift:#191514; --panel:#1c1817;
+    --line:#2c2725; --line-warm:#3a3330;
+    /* Every text colour below clears WCAG AA (4.5:1) on this background —
+       "dimmed" reasoning still has to be readable. --teal-deep is borders
+       only, where contrast rules don't apply. */
+    --fg:#eae8e6; --muted:#a3a09f; --dim:#968d88; --faint:#867d78;
+    --teal:#85c2ce; --teal-deep:#3f5f65; --prompt:#5d8a92; --ember:#d9815c;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   }
   *{box-sizing:border-box}
   html{-webkit-text-size-adjust:100%}
   body{
     margin:0; background:var(--bg); color:var(--fg);
-    font-family:var(--sans); line-height:1.6;
+    font-family:var(--mono); font-size:15px; line-height:1.72;
     -webkit-font-smoothing:antialiased;
+    /* faint scanline warmth, not a grid */
+    background-image:repeating-linear-gradient(180deg,
+      rgba(255,255,255,.012) 0 1px, transparent 1px 3px);
   }
-  a{color:var(--accent); text-decoration:none}
-  a:hover{text-decoration:underline}
-  .wrap{max-width:960px; margin:0 auto; padding:0 24px}
+  a{color:var(--teal); text-decoration:none; border-bottom:1px solid var(--teal-deep)}
+  a:hover{border-bottom-color:var(--teal)}
+  .wrap{max-width:900px; margin:0 auto; padding:0 22px}
 
-  /* subtle grid backdrop */
-  .hero{
-    position:relative; overflow:hidden;
-    border-bottom:1px solid var(--line);
-    padding:88px 0 72px;
+  /* ---- the session ------------------------------------------------- */
+  .session{padding:46px 0 40px}
+  .chrome{
+    border:1px solid var(--teal-deep); border-radius:6px;
+    padding:9px 15px; color:var(--muted); font-size:13px;
+    background:var(--bg-lift); margin-bottom:30px;
   }
-  .hero::before{
-    content:""; position:absolute; inset:0;
-    background:
-      radial-gradient(700px 340px at 50% -8%, rgba(96,211,164,.13), transparent 70%),
-      linear-gradient(transparent 95%, rgba(255,255,255,.03) 95%) 0 0/100% 34px,
-      linear-gradient(90deg, transparent 95%, rgba(255,255,255,.03) 95%) 0 0/34px 100%;
-    pointer-events:none;
-  }
-  .hero .wrap{position:relative}
-  .brand{
-    font-family:var(--mono); font-size:15px; letter-spacing:.14em;
-    text-transform:uppercase; color:var(--accent); margin:0 0 22px;
-  }
-  h1{
-    font-size:clamp(34px,6vw,58px); line-height:1.08; letter-spacing:-.025em;
-    margin:0 0 20px; font-weight:650;
-  }
-  h1 .soft{color:var(--muted); font-weight:400}
-  .lede{font-size:clamp(16px,2.2vw,20px); color:var(--muted); max-width:60ch; margin:0 0 34px}
+  .chrome b{color:var(--teal); font-weight:600}
+  .chrome .sep{color:var(--faint); padding:0 7px}
 
-  .cmd{
-    display:flex; align-items:center; gap:14px; flex-wrap:nowrap;
-    background:var(--panel); border:1px solid var(--line); border-radius:10px;
-    padding:14px 18px; font-family:var(--mono); font-size:14.5px;
-    max-width:640px;
+  .line{display:block; white-space:pre-wrap; word-break:break-word}
+  .prompt{color:var(--prompt)}
+  .you{color:var(--fg)}
+  .think-label{color:var(--dim); font-style:italic}
+  .thought{color:var(--dim); padding-left:2ch; display:block}
+  .answer{
+    color:var(--fg); font-size:clamp(16px,2.45vw,23px); line-height:1.58;
+    letter-spacing:-.005em; margin:16px 0 0; display:block; white-space:pre-wrap;
   }
-  .cmd .p{color:var(--accent-dim); flex:0 0 auto}
-  .cmd code{overflow-x:auto; min-width:0}
-  .cmd code{color:var(--fg); white-space:nowrap; overflow-x:auto}
-  .btns{display:flex; gap:12px; flex-wrap:wrap; margin-top:26px}
+  .answer em{color:var(--teal); font-style:normal}
+  .answer strong{color:var(--fg); font-weight:650}
+  .stat{color:var(--faint); font-size:13px; margin-top:16px; display:block}
+  .stat b{color:var(--dim); font-weight:400}
+  /* the block cursor minimlx leaves blinking at the prompt */
+  .cursor{
+    display:inline-block; width:.62ch; height:1.05em; background:var(--ember);
+    vertical-align:-.17em; margin-left:.12ch;
+  }
+  .blink{animation:blink 1.05s step-end infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+  .btns{display:flex; gap:11px; flex-wrap:wrap; margin-top:34px}
   .btn{
-    display:inline-block; padding:11px 20px; border-radius:9px;
-    font-size:15px; font-weight:550; border:1px solid var(--line);
-    color:var(--fg); background:var(--panel); transition:border-color .15s,color .15s;
+    padding:9px 17px; border:1px solid var(--line-warm); border-radius:5px;
+    color:var(--fg); background:var(--bg-lift); font-size:14px;
   }
-  .btn:hover{border-color:var(--accent-dim); color:var(--accent); text-decoration:none}
-  .btn.primary{background:var(--accent); color:#06231a; border-color:var(--accent)}
-  .btn.primary:hover{background:#7ae0b6; color:#06231a; border-color:#7ae0b6}
+  .btn:hover{border-color:var(--teal-deep); color:var(--teal)}
+  .btn.go{background:var(--teal); color:#10201f; border-color:var(--teal); font-weight:650}
+  .btn.go:hover{background:#a2d4de; color:#10201f; border-color:#a2d4de}
 
-  section{padding:66px 0; border-bottom:1px solid var(--line)}
-  h2{font-size:13px; font-family:var(--mono); letter-spacing:.16em; text-transform:uppercase;
-     color:var(--dim); margin:0 0 28px; font-weight:600}
-  h3{font-size:17px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em}
+  /* ---- sections ----------------------------------------------------- */
+  section{padding:52px 0; border-top:1px solid var(--line)}
+  .cmdline{color:var(--dim); font-size:14px; margin:0 0 26px}
+  .cmdline .prompt{color:var(--prompt)}
+  .cmdline b{color:var(--muted); font-weight:400}
 
-  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:26px 34px}
-  .grid p{margin:0; color:var(--muted); font-size:15px}
-
-  figure{margin:0}
-  figure img{width:100%; height:auto; display:block; border:1px solid var(--line); border-radius:12px}
-  figcaption{color:var(--dim); font-size:13.5px; margin-top:12px; font-family:var(--mono)}
+  dl{margin:0; display:grid; grid-template-columns:max-content 1fr; gap:11px 26px}
+  dt{color:var(--teal); font-size:14.5px}
+  dd{margin:0; color:var(--muted); font-size:14.5px}
+  @media (max-width:620px){
+    dl{grid-template-columns:1fr; gap:3px 0}
+    dd{margin:0 0 13px; padding-left:2ch}
+  }
 
   .scroll{overflow-x:auto; -webkit-overflow-scrolling:touch}
-  table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:560px}
-  th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); white-space:nowrap}
-  th{color:var(--dim); font-weight:600; font-family:var(--mono); font-size:12px;
-     letter-spacing:.08em; text-transform:uppercase}
-  td.n{font-family:var(--mono); text-align:right}
-  tr.hi td{color:var(--fg)}
-  tr.hi td.n strong{color:var(--accent)}
-  td code{font-family:var(--mono); font-size:13.5px; color:var(--fg)}
-  .note{color:var(--dim); font-size:13.5px; margin-top:16px; max-width:70ch}
+  table{border-collapse:collapse; width:100%; font-size:14px; min-width:540px}
+  th,td{text-align:left; padding:8px 16px 8px 0; white-space:nowrap}
+  th{color:var(--faint); font-weight:400; border-bottom:1px solid var(--line); padding-bottom:10px}
+  td{color:var(--muted)}
+  td.a{color:var(--fg)}
+  td.n{text-align:right; padding-right:22px}
+  tr.top td{color:var(--fg)}
+  tr.top td.n b{color:var(--teal); font-weight:650}
+  tbody tr:first-child td{padding-top:12px}
+  .note{color:var(--faint); font-size:13.5px; margin-top:20px; max-width:74ch; line-height:1.65}
+  code{color:var(--muted)}
+  dd code{color:var(--fg)}
 
   pre{
-    background:var(--panel); border:1px solid var(--line); border-radius:10px;
-    padding:18px 20px; overflow-x:auto; font-family:var(--mono); font-size:14px;
-    line-height:1.75; margin:0;
+    background:var(--bg-lift); border:1px solid var(--line); border-radius:6px;
+    padding:17px 19px; overflow-x:auto; font-size:14px; line-height:1.85; margin:0;
   }
-  pre .c{color:var(--dim)}
-  pre .p{color:var(--accent-dim)}
+  pre .c{color:var(--faint)}
+  pre .p{color:var(--prompt)}
 
-  footer{padding:44px 0 64px; color:var(--dim); font-size:14px}
-  footer a{color:var(--muted)}
-  @media (max-width:640px){
-    .hero{padding:64px 0 54px}
-    section{padding:50px 0}
+  figure{margin:0}
+  figure img{width:100%; height:auto; display:block; border:1px solid var(--line); border-radius:6px}
+  figcaption{color:var(--faint); font-size:13px; margin-top:11px}
+
+  footer{padding:38px 0 56px; color:var(--faint); font-size:13.5px; border-top:1px solid var(--line)}
+  footer a{color:var(--dim); border-bottom-color:var(--line-warm)}
+
+  @media (prefers-reduced-motion:reduce){
+    .blink{animation:none}
   }
 </style>
 </head>
 <body>
 
-<header class="hero">
-  <div class="wrap">
-    <p class="brand">minimlx</p>
-    <h1>Local models,<br><span class="soft">at laptop speed.</span></h1>
-    <p class="lede">
-      A fast macOS command line for running Gemma&nbsp;4, Qwen&nbsp;3.6 and Qwen&nbsp;3.8
-      entirely on your own machine, through Apple's MLX. Nothing leaves the device.
-    </p>
-    <div class="cmd"><span class="p">$</span><code>pip install "minimlx[mtplx] @ git+https://github.com/bravenewxyz/minimlx"</code></div>
+<main class="wrap">
+
+  <!-- The hero is a real session. Without JS every line below is already
+       here and readable; the script only re-reveals it at the model's
+       measured rate. -->
+  <header class="session">
+    <div class="chrome">
+      <b>minimlx chat</b><span class="sep">·</span>qwen38-27b-mtplx<span class="sep">·</span>tools: 7<span class="sep">·</span>bash: on
+    </div>
+
+    <div id="session">
+      <span class="line" data-step="typed" data-cps="32"><span class="prompt">› </span><span class="you">what is minimlx?</span></span>
+      <span class="line" data-step="pause" data-ms="420"><span class="think-label">thinking…</span></span>
+      <span class="line thought" data-step="stream" data-tps="180">Short answer wanted. Say what it is, where it runs, and that it stays on the machine.</span>
+      <span class="answer" data-step="stream" data-tps="57">I run <strong>Gemma 4</strong>, <strong>Qwen 3.6</strong> and <strong>Qwen 3.8</strong> entirely on your own Mac, through Apple's MLX — chat, agentic coding, voice, and an Anthropic-compatible server for Claude&nbsp;Code. <em>Nothing leaves the device.</em></span>
+      <span class="stat" data-step="stat">  <b>68 tok</b> ·  <b>57.0 tok/s</b> · thought 84 chars</span>
+    </div>
+
     <div class="btns">
-      <a class="btn primary" href="https://github.com/bravenewxyz/minimlx">View on GitHub</a>
-      <a class="btn" href="#speed">Benchmarks</a>
+      <a class="btn go" href="https://github.com/bravenewxyz/minimlx">View on GitHub</a>
+      <a class="btn" href="#speed">See the numbers</a>
     </div>
-  </div>
-</header>
+  </header>
 
-<section>
-  <div class="wrap">
-    <h2>What it does</h2>
-    <div class="grid">
-      <div>
-        <h3>Interactive chat</h3>
-        <p>Streaming output, reasoning display, and a local tool loop — read, write, edit, grep, glob, ls, and bash.</p>
-      </div>
-      <div>
-        <h3>Agentic coding</h3>
-        <p><code>minimlx code</code> runs one-shot programming tasks against your working tree with the same tools.</p>
-      </div>
-      <div>
-        <h3>Voice conversation</h3>
-        <p>Speak, transcribe, generate, speak back. Fully local, no cloud round trip.</p>
-      </div>
-      <div>
-        <h3>Backend for Claude Code</h3>
-        <p><code>minimlx serve</code> speaks the Anthropic API, so Claude Code can run against a local model.</p>
-      </div>
-      <div>
-        <h3>Speculative decoding</h3>
-        <p>DFlash block-diffusion drafts, Google MTP drafters, and MTPLX builds that carry their own prediction head.</p>
-      </div>
-      <div>
-        <h3>Prompt &amp; KV caching</h3>
-        <p>Cross-request prefix reuse, model aliases, and conversation logging out of the box.</p>
-      </div>
-    </div>
-  </div>
-</section>
+  <section>
+    <p class="cmdline"><span class="prompt">› </span><b>minimlx --help</b></p>
+    <dl>
+      <dt>chat</dt>          <dd>Interactive REPL — streaming output, reasoning, and a local tool loop: read, write, edit, grep, glob, ls, bash.</dd>
+      <dt>ask</dt>           <dd>One-shot prompt. Bare text works too, so <code>minimlx "explain crc32"</code> is enough.</dd>
+      <dt>code</dt>          <dd>One-shot programming task against your working tree, with the same tools.</dd>
+      <dt>conversation</dt>  <dd>Voice: speak → transcribe → generate → speak back, all on-device.</dd>
+      <dt>serve</dt>         <dd>Anthropic-compatible HTTP server, so Claude Code can run against a local model.</dd>
+      <dt>pull · ls · rm</dt><dd>Model and cache management, with aliases for everything in the library.</dd>
+    </dl>
+  </section>
 
-<section id="speed">
-  <div class="wrap">
-    <h2>Measured on an M5 Max</h2>
+  <section id="speed">
+    <p class="cmdline"><span class="prompt">› </span><b>minimlx models</b> <span style="color:var(--faint)">— measured on an M5 Max, 128 GB</span></p>
     <div class="scroll">
       <table>
         <thead>
-          <tr><th>Model</th><th>Build</th><th>Decode</th><th>Prefill</th><th>Peak RAM</th></tr>
+          <tr><th>alias</th><th>build</th><th class="n">decode</th><th class="n">prefill</th><th class="n">peak</th></tr>
         </thead>
         <tbody>
-          <tr class="hi">
-            <td><code>qwen38-27b-mtplx</code></td><td>27B, 4/8-bit + MTP head</td>
-            <td class="n"><strong>57 tok/s</strong></td><td class="n">352 tok/s</td><td class="n">21.0 GB</td>
+          <tr class="top">
+            <td class="a">qwen38-27b-mtplx</td><td>27B · 4/8-bit · MTP head</td>
+            <td class="n"><b>57 tok/s</b></td><td class="n">352 tok/s</td><td class="n">21.0 GB</td>
           </tr>
-          <tr>
-            <td><code>qwen38-9b-4bit</code></td><td>9B, 4-bit</td>
-            <td class="n">98 tok/s</td><td class="n">358 tok/s</td><td class="n">5.3 GB</td>
-          </tr>
-          <tr>
-            <td><code>qwen38-9b</code></td><td>9B, 8-bit</td>
-            <td class="n">58 tok/s</td><td class="n">276 tok/s</td><td class="n">9.7 GB</td>
-          </tr>
-          <tr>
-            <td><code>qwen38-27b-4bit</code></td><td>27B, 4-bit</td>
-            <td class="n">32 tok/s</td><td class="n">234 tok/s</td><td class="n">15.5 GB</td>
-          </tr>
-          <tr>
-            <td><code>qwen38-27b</code></td><td>27B, 8-bit</td>
-            <td class="n">16 tok/s</td><td class="n">159 tok/s</td><td class="n">28.9 GB</td>
-          </tr>
+          <tr><td class="a">qwen38-9b-4bit</td><td>9B · 4-bit</td>
+            <td class="n">98 tok/s</td><td class="n">358 tok/s</td><td class="n">5.3 GB</td></tr>
+          <tr><td class="a">qwen38-9b</td><td>9B · 8-bit</td>
+            <td class="n">58 tok/s</td><td class="n">276 tok/s</td><td class="n">9.7 GB</td></tr>
+          <tr><td class="a">qwen38-27b-4bit</td><td>27B · 4-bit</td>
+            <td class="n">32 tok/s</td><td class="n">234 tok/s</td><td class="n">15.5 GB</td></tr>
+          <tr><td class="a">qwen38-27b</td><td>27B · 8-bit</td>
+            <td class="n">16 tok/s</td><td class="n">159 tok/s</td><td class="n">28.9 GB</td></tr>
         </tbody>
       </table>
     </div>
     <p class="note">
-      MacBook Pro, Apple M5 Max, 128 GB unified memory. 300-token generations at
-      <code>--temp 0.7</code>, decode rate from a cold model. Sustained load roughly
-      halves these — an M-series laptop throttles well before the model does.
+      300-token generations at <code>--temp 0.7</code>, decode rate from a cold model.
+      Sustained load roughly halves all of it — an M-series laptop throttles well
+      before the model does. The answer above streamed at the top row's rate.
     </p>
-  </div>
-</section>
+  </section>
 
-<section>
-  <div class="wrap">
-    <h2>Getting started</h2>
-<pre><span class="c"># install (or clone first, if you want to hack on it)</span>
-<span class="p">$</span> pip install "minimlx[mtplx] @ git+https://github.com/bravenewxyz/minimlx"
+  <section>
+    <p class="cmdline"><span class="prompt">› </span><b>install</b></p>
+<pre><span class="p">$</span> pip install "minimlx[mtplx] @ git+https://github.com/bravenewxyz/minimlx"
 
-<span class="c"># talk to it</span>
+<span class="c"># then</span>
 <span class="p">$</span> minimlx chat
-<span class="p">$</span> minimlx ask "explain crc32"
 <span class="p">$</span> minimlx code "add a --json flag"
 
-<span class="c"># point Claude Code at a local model</span>
+<span class="c"># or point Claude Code at your own hardware</span>
 <span class="p">$</span> minimlx serve
 <span class="p">$</span> export ANTHROPIC_BASE_URL=http://127.0.0.1:1234</pre>
-    <p class="note">Requires macOS on Apple Silicon and Python 3.11+.</p>
-  </div>
-</section>
+    <p class="note">macOS on Apple Silicon, Python 3.11+. MIT licensed.</p>
+  </section>
 
-<section>
-  <div class="wrap">
-    <h2>In the terminal</h2>
+  <section>
+    <p class="cmdline"><span class="prompt">› </span><b>the real thing</b></p>
     <figure>
-      <img src="preview.png" alt="minimlx chat running in a terminal, streaming a response with reasoning and tool output" loading="lazy" width="2462" height="1440">
-      <figcaption>minimlx chat — streaming output with reasoning and collapsible tool calls.</figcaption>
+      <img src="preview.png" alt="minimlx chat in a terminal: a streamed answer with dimmed reasoning and a collapsible tool call" loading="lazy" width="2462" height="1440">
+      <figcaption>Reasoning dimmed, tool calls collapsed, tokens counted as they land.</figcaption>
     </figure>
-  </div>
-</section>
+  </section>
 
-<footer>
-  <div class="wrap">
-    MIT licensed · <a href="https://github.com/bravenewxyz/minimlx">github.com/bravenewxyz/minimlx</a>
-  </div>
+</main>
+
+<footer class="wrap">
+  <span class="prompt">› </span>MIT · <a href="https://github.com/bravenewxyz/minimlx">github.com/bravenewxyz/minimlx</a>
 </footer>
+
+<script>
+(function(){
+  var root = document.getElementById('session');
+  if (!root) return;
+  var steps = Array.prototype.slice.call(root.querySelectorAll('[data-step]'));
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // The trailing prompt is part of the finished session, so build it before
+  // anything is measured or hidden.
+  var tail = document.createElement('span');
+  tail.className = 'line';
+  tail.style.marginTop = '14px';
+  tail.innerHTML = '<span class="prompt">› </span>';
+  var cursor = document.createElement('span');
+  cursor.className = 'cursor blink';
+  tail.appendChild(cursor);
+  root.appendChild(tail);
+
+  // Anyone who prefers less motion (or has no JS) gets the finished session.
+  if (reduce) return;
+
+  // Reserve the finished height before blanking anything. Otherwise the hero
+  // grows line by line as it streams and shoves the buttons down the page.
+  root.style.minHeight = root.offsetHeight + 'px';
+  tail.style.visibility = 'hidden';
+
+  // Stash the real markup, blank the nodes, then play it back.
+  steps.forEach(function(el){ el._html = el.innerHTML; el.innerHTML = ''; el.style.visibility = 'hidden'; });
+
+  function finish(){
+    tail.style.visibility = '';
+    // Let the block size to its content again once nothing is animating.
+    root.style.minHeight = '';
+  }
+
+  // Reveal innerHTML progressively without splitting tags: walk the real DOM
+  // and uncover text nodes character by character.
+  function reveal(el, charsPerTick, tickMs, done){
+    el.innerHTML = el._html;
+    el.style.visibility = '';
+    var nodes = [], total = 0;
+    (function walk(n){
+      for (var i=0;i<n.childNodes.length;i++){
+        var c = n.childNodes[i];
+        if (c.nodeType === 3){ nodes.push({node:c, text:c.nodeValue}); total += c.nodeValue.length; c.nodeValue=''; }
+        else walk(c);
+      }
+    })(el);
+    var shown = 0;
+    var timer = setInterval(function(){
+      shown += charsPerTick;
+      var left = shown;
+      for (var i=0;i<nodes.length;i++){
+        var n = nodes[i];
+        if (left <= 0){ n.node.nodeValue = ''; continue; }
+        n.node.nodeValue = n.text.slice(0, left);
+        left -= n.text.length;
+      }
+      if (shown >= total){ clearInterval(timer); done && done(); }
+    }, tickMs);
+  }
+
+  var i = 0;
+  (function next(){
+    if (i >= steps.length){ finish(); return; }
+    var el = steps[i++], kind = el.dataset.step;
+
+    if (kind === 'pause'){
+      el.innerHTML = el._html; el.style.visibility = '';
+      setTimeout(next, parseInt(el.dataset.ms, 10) || 300);
+      return;
+    }
+    if (kind === 'stat'){
+      el.innerHTML = el._html; el.style.visibility = '';
+      setTimeout(next, 120);
+      return;
+    }
+    if (kind === 'typed'){
+      // a person at the keyboard, not a model
+      reveal(el, 1, Math.round(1000 / (parseInt(el.dataset.cps,10) || 30)), function(){ setTimeout(next, 380); });
+      return;
+    }
+    // 'stream': tokens/sec, ~3.6 characters per token — the model's own pace
+    var tps = parseFloat(el.dataset.tps) || 57;
+    var charsPerTick = 2;
+    var tickMs = Math.max(12, Math.round(1000 / (tps * 3.6 / charsPerTick)));
+    reveal(el, charsPerTick, tickMs, function(){ setTimeout(next, 260); });
+  })();
+})();
+</script>
 
 </body>
 </html>
