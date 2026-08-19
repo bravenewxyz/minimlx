@@ -6,8 +6,8 @@
 # Cloudflare origin cert — minimlx.com resolves straight to this box, so TLS
 # comes from the cluster's letsencrypt-production issuer over HTTP-01.
 #
-# The page ships in a ConfigMap that deploy.sh builds from ./index.html and
-# ../assets/preview.png: no image to build, no registry.
+# The page ships in a ConfigMap that deploy.sh builds from ./index.html:
+# no image to build, no registry.
 apiVersion: v1
 kind: Namespace
 metadata:
