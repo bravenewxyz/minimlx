@@ -19,6 +19,45 @@ metadata:
   name: minimlx-nginx
   namespace: minimlx
 data:
+  # A copy of the image's own nginx.conf with two changes: `worker_processes`
+  # is pinned, and gzip is on. The default is `auto`, which on this 192-core
+  # node spawns 192 workers to serve one static page — enough to OOM the pod
+  # against any sane memory limit.
+  nginx.conf: |
+    worker_processes  2;
+
+    error_log  /var/log/nginx/error.log notice;
+    pid        /tmp/nginx.pid;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        proxy_temp_path /tmp/proxy_temp;
+        client_body_temp_path /tmp/client_temp;
+        fastcgi_temp_path /tmp/fastcgi_temp;
+        uwsgi_temp_path /tmp/uwsgi_temp;
+        scgi_temp_path /tmp/scgi_temp;
+
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+        keepalive_timeout  65;
+
+        gzip              on;
+        gzip_min_length   512;
+        gzip_types        text/plain text/css application/javascript image/svg+xml;
+
+        include /etc/nginx/conf.d/*.conf;
+    }
   default.conf: |
     server {
         listen 8080;
@@ -64,7 +103,10 @@ spec:
           ports:
             - {containerPort: 8080, name: http}
           volumeMounts:
-            - {name: conf, mountPath: /etc/nginx/conf.d}
+            # subPath so each file lands beside the image's own, rather than
+            # replacing the whole directory.
+            - {name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf}
+            - {name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf}
             - {name: content, mountPath: /content}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}

@@ -13,9 +13,9 @@ cp index.html "$STAGE/"
 cp ../assets/preview.png "$STAGE/"
 
 if command -v sha256sum >/dev/null; then
-  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png | sha256sum | cut -c1-16)
+  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png k8s.yaml | sha256sum | cut -c1-16)
 else
-  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png | shasum -a 256 | cut -c1-16)
+  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png k8s.yaml | shasum -a 256 | cut -c1-16)
 fi
 
 $KUBECTL apply -f k8s.yaml
