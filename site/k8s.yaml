@@ -1,0 +1,94 @@
+# minimlx.com — static landing page on k3s (Traefik ingress).
+# The page itself lives in a ConfigMap that deploy.sh builds from ./index.html
+# and ../assets/preview.png, so there is no image to build or registry to push.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minimlx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minimlx-site
+  namespace: minimlx
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: minimlx-site}
+  template:
+    metadata:
+      labels: {app: minimlx-site}
+      annotations:
+        # Roll the pods whenever the page changes; deploy.sh sets this to a
+        # hash of the site files, since a ConfigMap edit alone won't restart.
+        minimlx.com/content-hash: "unset"
+    spec:
+      # Unprivileged nginx: listens on 8080 as a non-root user.
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: site
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /, port: 8080}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 8080}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # nginx writes its temp/pid dirs
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: site
+          configMap:
+            name: minimlx-site
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minimlx-site
+  namespace: minimlx
+spec:
+  selector: {app: minimlx-site}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minimlx-site
+  namespace: minimlx
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: minimlx.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minimlx-site
+                port: {number: 80}
+    - host: www.minimlx.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minimlx-site
+                port: {number: 80}
