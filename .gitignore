@@ -26,3 +26,6 @@ env/
 
 # Claude Code
 .claude/
+
+# Local site preview copy; deploy stages it from assets/
+site/preview.png
