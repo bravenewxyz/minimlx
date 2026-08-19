@@ -16,10 +16,18 @@ LOCAL_MODELS_DIR = Path.home() / ".cache" / "minimlx" / "models"
 
 # --- Default model aliases ------------------------------------------------
 
-# Default text model. Routed through the alias map in aliases.py — currently
-# pairs with the Google MTP drafter via the gemma4-moe preset (~118 tok/s
-# on M5 Max, 8.13× over the old gemma-4-31b-8bit + E4B baseline).
-MODEL = "gemma4-moe"
+# Default text model. Routed through the alias map in aliases.py.
+#
+# Qwen 3.8 27B, abliterated, in MTPLX's mixed 4/8-bit build: it carries its own
+# multi-token-prediction head, so it speculates without a second model resident
+# and without the `--draft` path Qwen 3.8 cannot use anyway (its linear-
+# attention layers have a non-trimmable KV cache, which mlx-lm's speculative
+# decoder rejects outright). Measured M5 Max, cold, 300 tok: ~50 tok/s decode
+# at depth 3 under the build's `turbo` profile, ~21 GB resident.
+#
+# Requires the `mtplx` extra. `gemma4-moe` remains a `-m` away and is the
+# fallback worth reaching for if mlx ever has to go back below 0.32.
+MODEL = "qwen38-27b-mtplx"
 STT_MODEL = "granite-stt"
 
 # --- Sampling ------------------------------------------------------------
