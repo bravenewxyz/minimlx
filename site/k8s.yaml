@@ -1,78 +1,113 @@
-# minimlx.com — static landing page on k3s (Traefik ingress).
-# The page itself lives in a ConfigMap that deploy.sh builds from ./index.html
-# and ../assets/preview.png, so there is no image to build or registry to push.
+# minimlx.com — static landing page on k3s (Traefik ingress, cert-manager TLS).
+#
+# Follows the conventions already in this cluster: per-project namespace,
+# `<project>-public` ingress, nginx-unprivileged serving from /content with a
+# /healthz probe. Unlike adventure.io — which sits behind Cloudflare and uses a
+# Cloudflare origin cert — minimlx.com resolves straight to this box, so TLS
+# comes from the cluster's letsencrypt-production issuer over HTTP-01.
+#
+# The page ships in a ConfigMap that deploy.sh builds from ./index.html and
+# ../assets/preview.png: no image to build, no registry.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: minimlx
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minimlx-nginx
+  namespace: minimlx
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name _;
+        root /content;
+        index index.html;
+
+        add_header X-Content-Type-Options "nosniff"                 always;
+        add_header Referrer-Policy        "strict-origin-when-cross-origin" always;
+
+        location = /healthz {
+            add_header Content-Type text/plain;
+            return 200 "ok\n";
+        }
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: minimlx-site
+  name: minimlx-web
   namespace: minimlx
 spec:
   replicas: 1
+  strategy: {type: Recreate}
   selector:
-    matchLabels: {app: minimlx-site}
+    matchLabels: {app: minimlx-web}
   template:
     metadata:
-      labels: {app: minimlx-site}
+      labels: {app: minimlx-web}
       annotations:
-        # Roll the pods whenever the page changes; deploy.sh sets this to a
-        # hash of the site files, since a ConfigMap edit alone won't restart.
+        # Editing a ConfigMap does not restart pods; deploy.sh sets this to a
+        # hash of the site files so a content change actually rolls out.
         minimlx.com/content-hash: "unset"
     spec:
-      # Unprivileged nginx: listens on 8080 as a non-root user.
       containers:
         - name: nginx
           image: nginxinc/nginx-unprivileged:1.27-alpine
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8080
-              name: http
+            - {containerPort: 8080, name: http}
           volumeMounts:
-            - name: site
-              mountPath: /usr/share/nginx/html
-              readOnly: true
-          resources:
-            requests: {cpu: 10m, memory: 24Mi}
-            limits: {cpu: 200m, memory: 128Mi}
+            - {name: conf, mountPath: /etc/nginx/conf.d}
+            - {name: content, mountPath: /content}
           readinessProbe:
-            httpGet: {path: /, port: 8080}
+            httpGet: {path: /healthz, port: 8080}
             initialDelaySeconds: 2
-            periodSeconds: 10
+            periodSeconds: 5
           livenessProbe:
-            httpGet: {path: /, port: 8080}
+            httpGet: {path: /healthz, port: 8080}
             initialDelaySeconds: 10
             periodSeconds: 30
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {cpu: 500m, memory: 128Mi}
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false   # nginx writes its temp/pid dirs
             capabilities: {drop: ["ALL"]}
       volumes:
-        - name: site
-          configMap:
-            name: minimlx-site
+        - name: conf
+          configMap: {name: minimlx-nginx}
+        - name: content
+          configMap: {name: minimlx-site}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: minimlx-site
+  name: minimlx-web
   namespace: minimlx
 spec:
-  selector: {app: minimlx-site}
+  selector: {app: minimlx-web}
   ports:
-    - name: http
-      port: 80
-      targetPort: 8080
+    - {name: http, port: 80, targetPort: 8080}
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: minimlx-site
+  name: minimlx-public
   namespace: minimlx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
 spec:
   ingressClassName: traefik
+  tls:
+    - hosts: [minimlx.com, www.minimlx.com]
+      secretName: minimlx-tls
   rules:
     - host: minimlx.com
       http:
@@ -80,15 +115,11 @@ spec:
           - path: /
             pathType: Prefix
             backend:
-              service:
-                name: minimlx-site
-                port: {number: 80}
+              service: {name: minimlx-web, port: {number: 80}}
     - host: www.minimlx.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
-              service:
-                name: minimlx-site
-                port: {number: 80}
+              service: {name: minimlx-web, port: {number: 80}}
