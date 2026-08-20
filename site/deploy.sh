@@ -10,20 +10,22 @@ KUBECTL=${KUBECTL:-"sudo k3s kubectl"}
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 cp index.html "$STAGE/"
+cp ../assets/preview.png "$STAGE/"
 
 if command -v sha256sum >/dev/null; then
-  HASH=$(cat "$STAGE"/index.html k8s.yaml | sha256sum | cut -c1-16)
+  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png k8s.yaml | sha256sum | cut -c1-16)
 else
-  HASH=$(cat "$STAGE"/index.html k8s.yaml | shasum -a 256 | cut -c1-16)
+  HASH=$(cat "$STAGE"/index.html "$STAGE"/preview.png k8s.yaml | shasum -a 256 | cut -c1-16)
 fi
 
 $KUBECTL apply -f k8s.yaml
 # Server-side apply: a client-side apply stores a full copy of the object in
-# the last-applied-configuration annotation, which any sizeable asset would
-# push over the 256 KB limit.
+# the last-applied-configuration annotation, and the base64 screenshot puts
+# that over the 256 KB annotation limit.
 $KUBECTL create configmap minimlx-site \
   --namespace minimlx \
   --from-file="$STAGE/index.html" \
+  --from-file="$STAGE/preview.png" \
   --dry-run=client -o yaml | $KUBECTL apply --server-side --force-conflicts -f -
 
 $KUBECTL -n minimlx patch deployment minimlx-web --type=merge \
